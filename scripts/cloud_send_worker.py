@@ -380,6 +380,38 @@ def _ensure_deploy_status_completed(campaign_id: str, manifest_uri: str) -> None
     )
 
 
+def _reconcile_local_deploy_statuses() -> None:
+    if not RUNS_DIR.exists():
+        return
+
+    for run_dir in RUNS_DIR.iterdir():
+        if not run_dir.is_dir():
+            continue
+        campaign_id = run_dir.name
+        deploy_state = load_cloud_deploy_status(campaign_id)
+        status = str(deploy_state.get("cloud_deploy_status") or "").strip().lower()
+        if status == CLOUD_DEPLOY_COMPLETED:
+            continue
+
+        send_state = load_cloud_send_status(campaign_id)
+        send_status = str(send_state.get("cloud_send_status") or "").strip().lower()
+        if send_status not in {
+            CLOUD_SEND_SYNCED,
+            CLOUD_SEND_WAITING_WINDOW,
+            CLOUD_SEND_SENDING,
+            CLOUD_SEND_COMPLETED,
+            CLOUD_SEND_FAILED,
+        }:
+            continue
+
+        manifest_uri = str(
+            send_state.get("cloud_send_manifest_uri")
+            or deploy_state.get("cloud_deploy_manifest_uri")
+            or ""
+        ).strip()
+        _ensure_deploy_status_completed(campaign_id, manifest_uri)
+
+
 def _upload_run_outputs(campaign_id: str) -> dict[str, float | int]:
     run_dir = RUNS_DIR / campaign_id
     run_uri = _bucket_uri(GCS_RUNS_PREFIX, campaign_id)
@@ -486,6 +518,7 @@ def run_worker(poll_seconds: float = CLOUD_WORKER_POLL_SECONDS) -> None:
 
     while True:
         now_utc = datetime.now(tz=timezone.utc)
+        _reconcile_local_deploy_statuses()
         config_issue = _config_issue_message()
         _update_worker_state(
             state,
