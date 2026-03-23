@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PROJECT_ROOT="${PROJECT_ROOT:-/opt/solar-lead-intelligence}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEFAULT_PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+PROJECT_ROOT="${PROJECT_ROOT:-$DEFAULT_PROJECT_ROOT}"
 CONFIG_DIR="${CONFIG_DIR:-$PROJECT_ROOT/config}"
 CLIENT_TARGET="${CLIENT_TARGET:-$CONFIG_DIR/gmail_client_secret.json}"
 TOKEN_TARGET="${TOKEN_TARGET:-$CONFIG_DIR/gmail_token.json}"
