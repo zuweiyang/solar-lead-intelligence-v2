@@ -157,8 +157,11 @@ def _load_state() -> dict:
             state.setdefault("last_poll_result", "")
             state.setdefault("last_candidate_count", 0)
             state.setdefault("last_manifest_sample", [])
+            state.setdefault("last_candidate_campaign_ids", [])
             state.setdefault("last_sync_campaign_id", "")
             state.setdefault("last_reconciled_campaign_id", "")
+            state.setdefault("last_selected_campaign_id", "")
+            state.setdefault("last_selected_due_at", "")
             state.setdefault("worker_config_ok", True)
             state.setdefault("worker_config_issue", "")
             state.setdefault("worker_bucket", GCS_BUCKET)
@@ -460,6 +463,9 @@ def run_worker(poll_seconds: float = CLOUD_WORKER_POLL_SECONDS) -> None:
                 last_manifest_count=0,
                 last_candidate_count=0,
                 last_manifest_sample=[],
+                last_candidate_campaign_ids=[],
+                last_selected_campaign_id="",
+                last_selected_due_at="",
             )
             _record_alert(
                 level="error",
@@ -485,6 +491,9 @@ def run_worker(poll_seconds: float = CLOUD_WORKER_POLL_SECONDS) -> None:
                 last_idle_reason="no_manifests",
                 last_poll_result="no_manifests",
                 last_candidate_count=0,
+                last_candidate_campaign_ids=[],
+                last_selected_campaign_id="",
+                last_selected_due_at="",
             )
             time.sleep(poll_seconds)
             continue
@@ -613,16 +622,24 @@ def run_worker(poll_seconds: float = CLOUD_WORKER_POLL_SECONDS) -> None:
                 last_idle_reason="no_actionable_manifests",
                 last_poll_result="no_actionable_manifests",
                 last_candidate_count=0,
+                last_candidate_campaign_ids=[],
+                last_selected_campaign_id="",
+                last_selected_due_at="",
             )
             time.sleep(poll_seconds)
             continue
 
-        _update_worker_state(state, last_candidate_count=len(candidates))
+        _update_worker_state(
+            state,
+            last_candidate_count=len(candidates),
+            last_candidate_campaign_ids=[campaign for _, campaign, _, _ in candidates[:5]],
+        )
         candidates.sort(key=lambda item: item[0])
         due, campaign_id, manifest_uri, ctx = candidates[0]
+        selection_now = datetime.now(tz=timezone.utc)
 
-        if due > now_utc:
-            wait_seconds = max((due - now_utc).total_seconds(), 0.0)
+        if due > selection_now:
+            wait_seconds = max((due - selection_now).total_seconds(), 0.0)
             capped_wait = min(wait_seconds, poll_seconds)
             sync_cloud_send_status(
                 campaign_id,
@@ -641,6 +658,8 @@ def run_worker(poll_seconds: float = CLOUD_WORKER_POLL_SECONDS) -> None:
                 last_wait_campaign_id=campaign_id,
                 last_wait_due_at=due.isoformat(),
                 last_poll_result="waiting_window",
+                last_selected_campaign_id=campaign_id,
+                last_selected_due_at=due.isoformat(),
             )
             print(
                 f"[CloudWorker] Next campaign window: {campaign_id} at {due.isoformat()} UTC | "
@@ -658,6 +677,8 @@ def run_worker(poll_seconds: float = CLOUD_WORKER_POLL_SECONDS) -> None:
                 last_wait_campaign_id="",
                 last_wait_due_at="",
                 last_poll_result="sending",
+                last_selected_campaign_id=campaign_id,
+                last_selected_due_at=due.isoformat(),
             )
             processed_uri = _process_campaign(campaign_id, manifest_uri, ctx)
             completed.add(campaign_id)
@@ -673,6 +694,8 @@ def run_worker(poll_seconds: float = CLOUD_WORKER_POLL_SECONDS) -> None:
                 last_processed_manifest_uri=processed_uri,
                 last_idle_reason="",
                 last_poll_result="completed_campaign",
+                last_selected_campaign_id=campaign_id,
+                last_selected_due_at=due.isoformat(),
             )
         except Exception as exc:
             print(f"[CloudWorker] Campaign failed: {campaign_id}: {exc}")
@@ -726,6 +749,8 @@ def run_worker(poll_seconds: float = CLOUD_WORKER_POLL_SECONDS) -> None:
                 last_failed_campaign_id=campaign_id,
                 last_idle_reason="awaiting_manual_recovery",
                 last_poll_result="send_failed",
+                last_selected_campaign_id=campaign_id,
+                last_selected_due_at=due.isoformat(),
             )
             _record_alert(
                 level="error",

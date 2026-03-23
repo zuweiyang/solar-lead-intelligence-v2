@@ -3219,4 +3219,32 @@ Dashboard visibility:
   - manifest sample
 - health is now promoted to `misconfigured` when worker config issues are present
 
+### V2 worker stability hardening: selection predictability (2026-03-23)
+
+The cloud worker now persists more of its selection state so restart behavior
+and wait-state diagnosis are easier to reason about.
+
+New persistent fields:
+
+- `last_candidate_campaign_ids`
+- `last_selected_campaign_id`
+- `last_selected_due_at`
+
+Behavior improvement:
+
+- after building the actionable candidate list, the worker now re-checks current
+  UTC time immediately before deciding whether the selected campaign is still in
+  `waiting_window`
+- this reduces a subtle stale-time risk where long manifest scanning could make
+  an already-due campaign still appear to be waiting
+
+Operator benefit:
+
+- dashboard can now show:
+  - which campaign the worker actually selected this cycle
+  - when that selected campaign is due
+  - a sample of actionable candidate campaign ids
+- this makes "why is the worker idle?" and "which run will go next?" much more
+  obvious during long queue windows
+
 ## END OF FILE

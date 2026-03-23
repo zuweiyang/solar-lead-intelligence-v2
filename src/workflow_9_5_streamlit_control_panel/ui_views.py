@@ -1150,6 +1150,14 @@ def render_kpi_dashboard() -> None:
             f"Last synced campaign: {worker.get('last_sync_campaign_id') or 'n/a'} | "
             f"Last reconciled campaign: {worker.get('last_reconciled_campaign_id') or 'n/a'}"
         )
+    if worker.get("last_selected_campaign_id") or worker.get("last_selected_due_at"):
+        st.caption(
+            f"Selected campaign: {worker.get('last_selected_campaign_id') or 'n/a'} | "
+            f"Selected due: {worker.get('last_selected_due_at') or 'n/a'}"
+        )
+    if worker.get("last_candidate_campaign_ids"):
+        candidate_sample = worker.get("last_candidate_campaign_ids") or []
+        st.caption("Candidate sample: " + " | ".join(candidate_sample[:5]))
     if worker.get("last_manifest_sample"):
         sample = worker.get("last_manifest_sample") or []
         st.caption("Manifest sample: " + " | ".join(sample[:3]))
