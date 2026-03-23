@@ -108,7 +108,11 @@ echo "[update-vm] Wrote release metadata to $release_file"
 
 if [[ -f "$PROJECT_ROOT/deploy/gcp/systemd/cloud-send-worker.service" ]]; then
   echo "[update-vm] Refreshing systemd unit"
-  $SUDO cp "$PROJECT_ROOT/deploy/gcp/systemd/cloud-send-worker.service" /etc/systemd/system/cloud-send-worker.service
+  rendered_unit="$(mktemp)"
+  sed "s|__PROJECT_ROOT__|$PROJECT_ROOT|g" \
+    "$PROJECT_ROOT/deploy/gcp/systemd/cloud-send-worker.service" > "$rendered_unit"
+  $SUDO cp "$rendered_unit" /etc/systemd/system/cloud-send-worker.service
+  rm -f "$rendered_unit"
   $SUDO systemctl daemon-reload
 fi
 

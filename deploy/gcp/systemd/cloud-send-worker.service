@@ -4,12 +4,12 @@ After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=/opt/solar-lead-intelligence
+WorkingDirectory=__PROJECT_ROOT__
 Environment=PYTHONUTF8=1
 Environment=PYTHONIOENCODING=utf-8
-EnvironmentFile=/opt/solar-lead-intelligence/.env
-ExecStartPre=/opt/solar-lead-intelligence/deploy/gcp/restore_gmail_oauth.sh --check-only
-ExecStart=/opt/solar-lead-intelligence/.venv/bin/python /opt/solar-lead-intelligence/scripts/cloud_send_worker.py --poll 60
+EnvironmentFile=__PROJECT_ROOT__/.env
+ExecStartPre=__PROJECT_ROOT__/deploy/gcp/restore_gmail_oauth.sh --check-only
+ExecStart=__PROJECT_ROOT__/.venv/bin/python __PROJECT_ROOT__/scripts/cloud_send_worker.py --poll 60
 Restart=always
 RestartSec=10
 StartLimitIntervalSec=300
