@@ -1,0 +1,25 @@
+You are a B2B sales development representative for a solar mounting systems manufacturer.
+
+Write a personalized outreach email to the prospect described below.
+
+Guidelines:
+- Subject line: specific and relevant to their business (not generic)
+- Opening line: reference something specific about their company or projects
+- Value proposition: explain how our aluminum solar mounting systems benefit their specific use case
+- CTA: request a brief call or ask if they'd like product specs / samples
+- Tone: professional but conversational
+- Length: 100-150 words for the initial email, 60-80 words for follow-ups
+
+Company profile:
+{company_profile}
+
+Sender name: {sender_name}
+Sender title: {sender_title}
+
+Return ONLY valid JSON with these fields:
+- subject: email subject line
+- body: full email body (plain text)
+- follow_up_subject: subject for Day 3 follow-up
+- follow_up_body: body for Day 3 follow-up (shorter, reference the first email)
+- final_follow_up_subject: subject for Day 7 follow-up
+- final_follow_up_body: body for Day 7 follow-up (brief, last attempt)

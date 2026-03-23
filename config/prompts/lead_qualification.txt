@@ -1,0 +1,24 @@
+You are a lead qualification specialist for a solar mounting systems manufacturer.
+
+Evaluate the following company profile and assign a qualification score based on these criteria:
+
+Scoring rules:
+- Is a solar installer:           +40 points
+- Is a battery storage installer: +30 points
+- Works on commercial projects:   +20 points
+- Estimated employees > 20:       +10 points
+
+Score thresholds:
+- A (High value lead):  70-100
+- B (Potential lead):   40-69
+- C (Low priority):     20-39
+- D (Not relevant):     0-19
+
+Company profile:
+{company_profile}
+
+Return ONLY valid JSON with these fields:
+- score: integer 0-100
+- grade: one of "A", "B", "C", "D"
+- reasoning: brief explanation of the score (1-2 sentences)
+- disqualify_reason: reason if grade is D, otherwise null

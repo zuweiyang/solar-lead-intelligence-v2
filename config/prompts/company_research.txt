@@ -1,0 +1,14 @@
+You are a business analyst. Analyze the following company website content and extract structured information.
+
+Return ONLY valid JSON with these fields:
+- company_summary: 2-3 sentence summary of what the company does
+- business_type: primary business type (e.g., "solar installer", "EPC contractor", "battery storage installer")
+- products: list of main products or services offered
+- target_market: market segments served (e.g., "residential", "commercial", "utility-scale")
+- location: primary operating location(s)
+- employee_count_estimate: estimated number of employees ("1-10", "11-50", "51-200", "200+", or "unknown")
+
+Website content:
+{website_content}
+
+Respond in valid JSON format only. Do not include any explanation outside the JSON.

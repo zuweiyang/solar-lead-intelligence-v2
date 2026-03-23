@@ -1,0 +1,19 @@
+[Unit]
+Description=Solar Lead Intelligence Cloud Send Worker
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/solar-lead-intelligence
+Environment=PYTHONUTF8=1
+Environment=PYTHONIOENCODING=utf-8
+EnvironmentFile=/opt/solar-lead-intelligence/.env
+ExecStartPre=/opt/solar-lead-intelligence/deploy/gcp/restore_gmail_oauth.sh --check-only
+ExecStart=/opt/solar-lead-intelligence/.venv/bin/python /opt/solar-lead-intelligence/scripts/cloud_send_worker.py --poll 60
+Restart=always
+RestartSec=10
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Install]
+WantedBy=multi-user.target

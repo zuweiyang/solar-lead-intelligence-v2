@@ -1,0 +1,68 @@
+# ============================================================
+# Solar Lead Intelligence — .gitignore
+# ============================================================
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# --- Environment / secrets ---
+.env
+.env.*
+!.env.example
+!deploy/gcp/.env.gcp.example
+
+# --- Gmail OAuth2 credentials (NEVER commit these) ---
+config/gmail_client_secret.json
+config/gmail_token.json
+
+# --- API tokens / key files ---
+config/*.json
+!config/prompts/
+
+# --- Data files (potentially large / sensitive) ---
+data/
+!data/.gitkeep
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+
+# --- IDE / OS ---
+.vscode/
+.idea/
+.claude/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# --- Test / coverage ---
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# --- Logs ---
+*.log
+logs/
+
+# --- JS / frontend artifacts ---
+node_modules/
+
+# --- Local caches / runtime state ---
+.tldextract-cache/
+data/*.log
+data/*.pid
+data/last_cloudrun_tid.txt
+
+# --- Local export artifacts ---
+_github*/

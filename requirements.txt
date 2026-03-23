@@ -1,0 +1,25 @@
+# Core
+python-dotenv>=1.0.0
+
+# AI APIs
+anthropic>=0.84.0
+# openai>=1.0.0
+
+# Web scraping & crawling
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+tldextract>=5.1.0
+playwright>=1.40.0        # for JS-rendered sites; run: playwright install chromium
+
+# Google Maps / search
+# google-maps-services-python>=4.10.0   # official Google Places API
+# serpapi>=0.1.5                         # SerpAPI alternative
+
+# Scheduling
+# apscheduler>=3.10.0
+
+# Data handling
+pandas>=2.0.0             # optional — useful for CSV transforms
+
+# Dev / testing
+pytest>=7.4.0
