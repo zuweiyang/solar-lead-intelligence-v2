@@ -243,6 +243,7 @@ def main() -> None:
     rollback_script = ROOT / "deploy" / "gcp" / "rollback_vm.sh"
     release_status_script = ROOT / "deploy" / "gcp" / "release_status.sh"
     stage_gmail_script = ROOT / "deploy" / "gcp" / "stage_gmail_oauth.sh"
+    publish_gmail_script = ROOT / "deploy" / "gcp" / "publish_gmail_oauth_to_secret_manager.sh"
     github_bundle_script = ROOT / "scripts" / "build_github_bundle.ps1"
     if update_script.exists():
         update_text = update_script.read_text(encoding="utf-8")
@@ -252,8 +253,9 @@ def main() -> None:
     assert rollback_script.exists(), "FAIL: rollback_vm.sh missing"
     assert release_status_script.exists(), "FAIL: release_status.sh missing"
     assert stage_gmail_script.exists(), "FAIL: stage_gmail_oauth.sh missing"
+    assert publish_gmail_script.exists(), "FAIL: publish_gmail_oauth_to_secret_manager.sh missing"
     assert github_bundle_script.exists(), "FAIL: build_github_bundle.ps1 missing"
-    print("    OK [ ] rollback/release status/stage scripts present.")
+    print("    OK [ ] rollback/release status/stage/publish scripts present.")
 
     actions_file = ROOT / "src" / "workflow_9_5_streamlit_control_panel" / "ui_actions.py"
     if actions_file.exists():

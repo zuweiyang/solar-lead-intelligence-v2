@@ -47,6 +47,30 @@ re-uploading OAuth files by hand.
 
 ---
 
+## Secret Manager enablement
+
+If you want to finish V2 on the fully managed secret path, publish the current
+working Gmail OAuth files into Secret Manager:
+
+```bash
+export SOLAR_GMAIL_CLIENT_SECRET_NAME=solar-gmail-client-secret
+export SOLAR_GMAIL_TOKEN_SECRET_NAME=solar-gmail-token
+bash deploy/gcp/publish_gmail_oauth_to_secret_manager.sh
+```
+
+Then set the same secret names in `.env` and you can recover the worker without
+depending on local staged files:
+
+```bash
+bash deploy/gcp/restore_gmail_oauth.sh --force
+bash deploy/gcp/recover_cloud_worker.sh --skip-update
+```
+
+This path is now fully scripted; the remaining work is just applying it in your
+live GCP project.
+
+---
+
 ## Standard restore command
 
 Run:
@@ -130,6 +154,7 @@ bash deploy/gcp/recover_cloud_worker.sh --skip-update
 
 ## Related files
 
+- [publish_gmail_oauth_to_secret_manager.sh](/d:/solar-lead-intelligence/deploy/gcp/publish_gmail_oauth_to_secret_manager.sh)
 - [stage_gmail_oauth.sh](/d:/solar-lead-intelligence/deploy/gcp/stage_gmail_oauth.sh)
 - [restore_gmail_oauth.sh](/d:/solar-lead-intelligence/deploy/gcp/restore_gmail_oauth.sh)
 - [recover_cloud_worker.sh](/d:/solar-lead-intelligence/deploy/gcp/recover_cloud_worker.sh)

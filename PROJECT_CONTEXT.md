@@ -3009,11 +3009,15 @@ Gmail secret-management hardening:
   `SOLAR_SECRET_SOURCE_DIR` outside the repo
 - new helper:
   - `deploy/gcp/stage_gmail_oauth.sh`
+- new helper:
+  - `deploy/gcp/publish_gmail_oauth_to_secret_manager.sh`
 - purpose:
   - copy working `config/gmail_client_secret.json` and `config/gmail_token.json`
     into the fixed restore-source directory
   - give VM rebuilds and token refreshes one predictable restore location
   - reduce future operator reliance on manual re-upload
+  - provide a scripted path to publish the current working OAuth pair into
+    Google Secret Manager
 
 Recommended operator sequence after Gmail OAuth is confirmed working:
 
@@ -3022,5 +3026,12 @@ Recommended operator sequence after Gmail OAuth is confirmed working:
 3. future recoveries use:
    - `bash deploy/gcp/restore_gmail_oauth.sh --force`
    - `bash deploy/gcp/recover_cloud_worker.sh --skip-update`
+
+Systemd cleanup:
+
+- `deploy/gcp/systemd/cloud-send-worker.service`
+  - moved `StartLimitIntervalSec` / `StartLimitBurst` into `[Unit]`
+  - removes the VM warning:
+    - `Unknown key 'StartLimitIntervalSec' in section [Service], ignoring.`
 
 ## END OF FILE
