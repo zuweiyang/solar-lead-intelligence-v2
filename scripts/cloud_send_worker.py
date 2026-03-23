@@ -13,12 +13,15 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import smtplib
 import subprocess
 import sys
 import tempfile
 import time
 import urllib.request
 from datetime import datetime, timezone
+from email.message import EmailMessage
+from email.utils import formataddr
 from pathlib import Path
 
 os.environ.setdefault("PYTHONUTF8", "1")
@@ -32,6 +35,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config.run_context import clear_active_run, set_active_run
 from config.settings import (
+    CLOUD_WORKER_ALERT_EMAIL_FROM,
+    CLOUD_WORKER_ALERT_EMAIL_MODE,
+    CLOUD_WORKER_ALERT_EMAIL_TO,
+    CLOUD_WORKER_ALERT_SUBJECT_PREFIX,
     CLOUD_WORKER_ALERT_WEBHOOK,
     CLOUD_WORKER_POLL_SECONDS,
     DATA_DIR,
@@ -42,6 +49,13 @@ from config.settings import (
     GCS_PROCESSED_PREFIX,
     GCS_RUNS_PREFIX,
     RUNS_DIR,
+    SMTP_FROM_EMAIL,
+    SMTP_FROM_NAME,
+    SMTP_HOST,
+    SMTP_PASSWORD,
+    SMTP_PORT,
+    SMTP_USERNAME,
+    SMTP_USE_TLS,
 )
 from src.workflow_9_campaign_runner.campaign_state import (
     CLOUD_DEPLOY_COMPLETED,
@@ -199,6 +213,109 @@ def _post_alert(payload: dict) -> None:
         response.read()
 
 
+def _alert_email_sender() -> str:
+    return CLOUD_WORKER_ALERT_EMAIL_FROM or SMTP_FROM_EMAIL or SMTP_USERNAME
+
+
+def _build_alert_email(payload: dict) -> EmailMessage:
+    sender_email = _alert_email_sender()
+    sender_name = SMTP_FROM_NAME or "Cloud Worker"
+    recipient = CLOUD_WORKER_ALERT_EMAIL_TO
+    if not recipient:
+        raise RuntimeError("CLOUD_WORKER_ALERT_EMAIL_TO is not configured")
+    if not sender_email:
+        raise RuntimeError("No sender email configured for cloud worker alerts")
+
+    subject_prefix = CLOUD_WORKER_ALERT_SUBJECT_PREFIX or "[CloudWorker]"
+    level = str(payload.get("level") or "info").upper()
+    event_type = str(payload.get("event_type") or "event")
+    campaign_id = str(payload.get("campaign_id") or "")
+    message = str(payload.get("message") or "")
+    manifest_uri = str(payload.get("manifest_uri") or "")
+    timestamp = str(payload.get("timestamp") or "")
+    details = payload.get("details") or {}
+
+    subject = f"{subject_prefix} {level} {event_type}"
+    if campaign_id:
+        subject = f"{subject} {campaign_id}"
+
+    lines = [
+        f"Timestamp: {timestamp}",
+        f"Level: {level}",
+        f"Event: {event_type}",
+    ]
+    if campaign_id:
+        lines.append(f"Campaign: {campaign_id}")
+    if manifest_uri:
+        lines.append(f"Manifest: {manifest_uri}")
+    lines.extend(["", message])
+    if details:
+        lines.extend(["", "Details:", json.dumps(details, ensure_ascii=False, indent=2)])
+
+    msg = EmailMessage()
+    msg["From"] = formataddr((sender_name, sender_email))
+    msg["To"] = recipient
+    msg["Subject"] = subject
+    msg.set_content("\n".join(lines))
+    return msg
+
+
+def _send_alert_email_via_smtp(msg: EmailMessage) -> None:
+    sender_email = _alert_email_sender()
+    if not SMTP_HOST or not SMTP_PORT or not SMTP_USERNAME or not SMTP_PASSWORD:
+        raise RuntimeError("SMTP settings are incomplete for cloud worker alert email")
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+        if SMTP_USE_TLS:
+            server.starttls()
+        server.login(SMTP_USERNAME, SMTP_PASSWORD)
+        server.send_message(msg, from_addr=sender_email, to_addrs=[CLOUD_WORKER_ALERT_EMAIL_TO])
+
+
+def _send_alert_email_via_gmail_api(msg: EmailMessage) -> None:
+    from google.oauth2.credentials import Credentials
+    from google.auth.transport.requests import Request
+    from googleapiclient.discovery import build
+    import base64
+
+    token_file = Path("config") / "gmail_token.json"
+    if not token_file.exists():
+        from config.settings import GMAIL_TOKEN_FILE
+
+        token_file = GMAIL_TOKEN_FILE
+
+    creds = None
+    if token_file.exists():
+        creds = Credentials.from_authorized_user_file(
+            str(token_file),
+            scopes=["https://www.googleapis.com/auth/gmail.send"],
+        )
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            raise RuntimeError("Gmail API token missing or invalid for alert email")
+
+    service = build("gmail", "v1", credentials=creds)
+    raw_bytes = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+    service.users().messages().send(userId="me", body={"raw": raw_bytes}).execute()
+
+
+def _post_alert_email(payload: dict) -> None:
+    if not CLOUD_WORKER_ALERT_EMAIL_TO:
+        return
+    msg = _build_alert_email(payload)
+    mode = CLOUD_WORKER_ALERT_EMAIL_MODE or "gmail_api"
+    if mode == "smtp":
+        _send_alert_email_via_smtp(msg)
+        return
+    if mode == "gmail_api":
+        _send_alert_email_via_gmail_api(msg)
+        return
+    raise RuntimeError(
+        f"Unsupported CLOUD_WORKER_ALERT_EMAIL_MODE: {CLOUD_WORKER_ALERT_EMAIL_MODE!r}"
+    )
+
+
 def _record_alert(
     *,
     level: str,
@@ -224,6 +341,10 @@ def _record_alert(
         _post_alert(payload)
     except Exception as exc:
         print(f"[CloudWorker] Alert delivery failed: {exc}")
+    try:
+        _post_alert_email(payload)
+    except Exception as exc:
+        print(f"[CloudWorker] Alert email delivery failed: {exc}")
 
 
 def _update_worker_state(state: dict, **updates: object) -> None:

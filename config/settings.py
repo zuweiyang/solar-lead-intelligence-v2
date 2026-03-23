@@ -72,6 +72,10 @@ GCS_PROCESSED_PREFIX = os.getenv("GCS_PROCESSED_PREFIX", "processed")
 GCS_FAILED_PREFIX = os.getenv("GCS_FAILED_PREFIX", "failed")
 CLOUD_WORKER_POLL_SECONDS = float(os.getenv("CLOUD_WORKER_POLL_SECONDS", "60"))
 CLOUD_WORKER_ALERT_WEBHOOK = os.getenv("CLOUD_WORKER_ALERT_WEBHOOK", "").strip()
+CLOUD_WORKER_ALERT_EMAIL_TO = os.getenv("CLOUD_WORKER_ALERT_EMAIL_TO", "").strip()
+CLOUD_WORKER_ALERT_EMAIL_MODE = os.getenv("CLOUD_WORKER_ALERT_EMAIL_MODE", "gmail_api").strip().lower()
+CLOUD_WORKER_ALERT_EMAIL_FROM = os.getenv("CLOUD_WORKER_ALERT_EMAIL_FROM", "").strip()
+CLOUD_WORKER_ALERT_SUBJECT_PREFIX = os.getenv("CLOUD_WORKER_ALERT_SUBJECT_PREFIX", "[CloudWorker]").strip()
 
 # --- Base Directories ---
 BASE_DIR     = Path(__file__).parent.parent
