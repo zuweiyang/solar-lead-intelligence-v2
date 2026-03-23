@@ -597,6 +597,8 @@ def load_cloud_worker_health() -> dict:
 
     if not worker_state:
         health = "offline"
+    elif str(worker_state.get("worker_config_issue") or "").strip():
+        health = "misconfigured"
     elif last_poll is None:
         health = "unknown"
     else:
@@ -655,6 +657,15 @@ def load_cloud_worker_health() -> dict:
         "last_completed_campaign_id": str(worker_state.get("last_completed_campaign_id") or "").strip(),
         "last_failed_campaign_id": str(worker_state.get("last_failed_campaign_id") or "").strip(),
         "last_processed_manifest_uri": str(worker_state.get("last_processed_manifest_uri") or "").strip(),
+        "last_poll_result": str(worker_state.get("last_poll_result") or "").strip(),
+        "last_candidate_count": int(worker_state.get("last_candidate_count") or 0),
+        "last_manifest_sample": worker_state.get("last_manifest_sample") or [],
+        "last_sync_campaign_id": str(worker_state.get("last_sync_campaign_id") or "").strip(),
+        "last_reconciled_campaign_id": str(worker_state.get("last_reconciled_campaign_id") or "").strip(),
+        "worker_config_ok": bool(worker_state.get("worker_config_ok", True)),
+        "worker_config_issue": str(worker_state.get("worker_config_issue") or "").strip(),
+        "worker_bucket": str(worker_state.get("worker_bucket") or "").strip(),
+        "worker_manifests_prefix": str(worker_state.get("worker_manifests_prefix") or "").strip(),
         "alerts_24h": alerts_24h,
         "last_alert_at": last_alert_at,
         "last_alert_level": last_alert_level,

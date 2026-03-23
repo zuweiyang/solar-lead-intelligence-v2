@@ -211,6 +211,15 @@ def main() -> None:
         "last_completed_campaign_id",
         "last_failed_campaign_id",
         "last_processed_manifest_uri",
+        "last_poll_result",
+        "last_candidate_count",
+        "last_manifest_sample",
+        "last_sync_campaign_id",
+        "last_reconciled_campaign_id",
+        "worker_config_ok",
+        "worker_config_issue",
+        "worker_bucket",
+        "worker_manifests_prefix",
         "alerts_24h",
         "last_alert_at",
         "last_alert_level",
@@ -269,7 +278,7 @@ def main() -> None:
     views_file = ROOT / "src" / "workflow_9_5_streamlit_control_panel" / "ui_views.py"
     if views_file.exists():
         view_text = views_file.read_text(encoding="utf-8")
-        for marker in ("Deploy Selected", "ready_cloud_deploy_editor", "CheckboxColumn("):
+        for marker in ("Deploy Selected", "ready_cloud_deploy_editor", "CheckboxColumn(", "Cloud worker config issue:", "Manifest sample:"):
             assert marker in view_text, f"FAIL: ui_views missing selective deploy marker: {marker}"
         print("    OK [ ] selective deploy UI markers present.")
 

@@ -1136,15 +1136,32 @@ def render_kpi_dashboard() -> None:
         f"Last poll: {worker.get('last_poll_at') or 'n/a'} | "
         f"Last success: {worker.get('last_success_at') or 'n/a'} | "
         f"Last error: {worker.get('last_error_at') or 'n/a'} | "
-        f"Idle reason: {worker.get('last_idle_reason') or 'n/a'}"
+        f"Idle reason: {worker.get('last_idle_reason') or 'n/a'} | "
+        f"Poll result: {worker.get('last_poll_result') or 'n/a'}"
     )
+    st.caption(
+        f"Bucket: {worker.get('worker_bucket') or 'n/a'} | "
+        f"Manifest prefix: {worker.get('worker_manifests_prefix') or 'n/a'} | "
+        f"Manifest count: {worker.get('last_manifest_count') or 0} | "
+        f"Actionable candidates: {worker.get('last_candidate_count') or 0}"
+    )
+    if worker.get("last_sync_campaign_id") or worker.get("last_reconciled_campaign_id"):
+        st.caption(
+            f"Last synced campaign: {worker.get('last_sync_campaign_id') or 'n/a'} | "
+            f"Last reconciled campaign: {worker.get('last_reconciled_campaign_id') or 'n/a'}"
+        )
+    if worker.get("last_manifest_sample"):
+        sample = worker.get("last_manifest_sample") or []
+        st.caption("Manifest sample: " + " | ".join(sample[:3]))
     if worker.get("last_alert_message"):
         st.caption(
             f"Last alert: {worker.get('last_alert_at') or 'n/a'} | "
             f"{worker.get('last_alert_level') or 'n/a'} / {worker.get('last_alert_type') or 'n/a'} | "
             f"{worker.get('last_alert_message')}"
         )
-    if worker.get("worker_health") in {"stalled", "offline"}:
+    if worker.get("worker_config_issue"):
+        st.error(f"Cloud worker config issue: {worker['worker_config_issue']}")
+    if worker.get("worker_health") in {"stalled", "offline", "misconfigured"}:
         st.warning("Cloud worker looks stalled or offline. Check VM service health before assuming cloud send is progressing.")
 
     with st.expander("Current Cloud Handoff Detail", expanded=False):

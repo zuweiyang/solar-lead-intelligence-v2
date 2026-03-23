@@ -3140,4 +3140,83 @@ Recovery status after drill:
 - Secret Manager recovery path is code-safe now, but still needs IAM access to
   be fully validated in production
 
+### V2 recovery drill closure: Secret Manager restore succeeded (2026-03-23)
+
+Follow-up validation completed after granting the VM runtime access to read the
+published Gmail OAuth secrets.
+
+Successful drill steps:
+
+1. removed runtime files:
+   - `config/gmail_client_secret.json`
+   - `config/gmail_token.json`
+2. ran:
+   - `bash deploy/gcp/restore_gmail_oauth.sh --force`
+3. confirmed restored files were non-empty and had `600` permissions
+4. ran:
+   - `bash deploy/gcp/recover_cloud_worker.sh --skip-update`
+5. confirmed:
+   - `cloud-send-worker.service` returned to `active (running)`
+   - worker resumed scanning live manifests including queued Brazil campaigns
+
+Outcome:
+
+- fixed restore directory path is validated
+- Secret Manager restore path is validated
+- worker restart recovery path is validated
+- V2 items now effectively complete:
+  - `1. deployment/version management`
+  - `3. Gmail secret management`
+  - `7. recovery ability`
+
+Current operator note:
+
+- the live GCS bucket for this environment is:
+  - `emailoutbound`
+- do not leave `GCS_BUCKET=your-gcs-bucket-name` in a new VM `.env`
+- if worker reports `no_manifests`, first compare `.env` bucket/prefix values
+  against the previously working environment
+
+### V2 observability hardening: worker config visibility (2026-03-23)
+
+Cloud worker state now exposes more direct operator signals so dashboard users
+can distinguish "truly idle" from "misconfigured" and "actively scanning".
+
+Worker state additions in `data/cloud_send_worker_state.json`:
+
+- `last_poll_result`
+- `last_candidate_count`
+- `last_manifest_sample`
+- `last_sync_campaign_id`
+- `last_reconciled_campaign_id`
+- `worker_config_ok`
+- `worker_config_issue`
+- `worker_bucket`
+- `worker_manifests_prefix`
+
+Behavior change:
+
+- `scripts/cloud_send_worker.py` now validates obvious bucket misconfiguration
+  before polling
+- placeholder or empty `GCS_BUCKET` now surfaces as:
+  - `last_idle_reason = config_error`
+  - `last_poll_result = config_error`
+  - structured alert:
+    - `worker_config_invalid`
+- this prevents the previous failure mode where the worker looked "healthy" but
+  silently polled the wrong manifest queue
+
+Dashboard visibility:
+
+- `load_cloud_worker_health()` now returns the new worker config / poll fields
+- KPI dashboard `Cloud Worker Health` now shows:
+  - worker bucket
+  - manifest prefix
+  - manifest count
+  - actionable candidate count
+  - last synced campaign
+  - last reconciled campaign
+  - manifest sample
+- health is now promoted to `misconfigured` when worker config issues are present
+
 ## END OF FILE

@@ -154,6 +154,15 @@ def _load_state() -> dict:
             state.setdefault("last_completed_campaign_id", "")
             state.setdefault("last_failed_campaign_id", "")
             state.setdefault("last_processed_manifest_uri", "")
+            state.setdefault("last_poll_result", "")
+            state.setdefault("last_candidate_count", 0)
+            state.setdefault("last_manifest_sample", [])
+            state.setdefault("last_sync_campaign_id", "")
+            state.setdefault("last_reconciled_campaign_id", "")
+            state.setdefault("worker_config_ok", True)
+            state.setdefault("worker_config_issue", "")
+            state.setdefault("worker_bucket", GCS_BUCKET)
+            state.setdefault("worker_manifests_prefix", GCS_MANIFESTS_PREFIX)
             return state
     except Exception:
         return {"completed_campaigns": [], "failed_campaigns": [], "synced_manifests": {}}
@@ -211,6 +220,15 @@ def _update_worker_state(state: dict, **updates: object) -> None:
     _save_state(state)
 
 
+def _config_issue_message() -> str:
+    bucket = str(GCS_BUCKET or "").strip()
+    if not bucket:
+        return "GCS_BUCKET is empty; cloud worker cannot see the manifest queue."
+    if bucket in {"your-gcs-bucket-name", "example-bucket"} or "your-gcs-bucket" in bucket:
+        return f"GCS_BUCKET is still a placeholder ({bucket}); worker is polling the wrong queue."
+    return ""
+
+
 def _reconcile_manifest_with_run_state(
     campaign_id: str,
     manifest_uri: str,
@@ -244,7 +262,9 @@ def _reconcile_manifest_with_run_state(
             last_success_at=_now_utc(),
             last_completed_campaign_id=campaign_id,
             last_processed_manifest_uri=processed_uri,
+            last_reconciled_campaign_id=campaign_id,
             last_idle_reason="reconciled_completed_manifest",
+            last_poll_result="reconciled_completed",
         )
         return True
 
@@ -267,6 +287,8 @@ def _reconcile_manifest_with_run_state(
             failed_campaigns=sorted(failed),
             last_failed_campaign_id=campaign_id,
             last_idle_reason="awaiting_manual_recovery",
+            last_reconciled_campaign_id=campaign_id,
+            last_poll_result="reconciled_failed",
         )
         return True
 
@@ -420,12 +442,50 @@ def run_worker(poll_seconds: float = CLOUD_WORKER_POLL_SECONDS) -> None:
 
     while True:
         now_utc = datetime.now(tz=timezone.utc)
-        _update_worker_state(state, last_poll_at=_now_utc())
+        config_issue = _config_issue_message()
+        _update_worker_state(
+            state,
+            last_poll_at=_now_utc(),
+            worker_bucket=GCS_BUCKET,
+            worker_manifests_prefix=GCS_MANIFESTS_PREFIX,
+            worker_config_ok=(config_issue == ""),
+            worker_config_issue=config_issue,
+        )
+        if config_issue:
+            _update_worker_state(
+                state,
+                last_error_at=_now_utc(),
+                last_idle_reason="config_error",
+                last_poll_result="config_error",
+                last_manifest_count=0,
+                last_candidate_count=0,
+                last_manifest_sample=[],
+            )
+            _record_alert(
+                level="error",
+                event_type="worker_config_invalid",
+                message=config_issue,
+                details={
+                    "bucket": GCS_BUCKET,
+                    "manifests_prefix": GCS_MANIFESTS_PREFIX,
+                },
+            )
+            time.sleep(poll_seconds)
+            continue
         manifest_uris = _list_manifest_uris()
-        _update_worker_state(state, last_manifest_count=len(manifest_uris))
+        _update_worker_state(
+            state,
+            last_manifest_count=len(manifest_uris),
+            last_manifest_sample=manifest_uris[:3],
+        )
         if not manifest_uris:
             print("[CloudWorker] No manifests found. Sleeping.")
-            _update_worker_state(state, last_idle_reason="no_manifests")
+            _update_worker_state(
+                state,
+                last_idle_reason="no_manifests",
+                last_poll_result="no_manifests",
+                last_candidate_count=0,
+            )
             time.sleep(poll_seconds)
             continue
 
@@ -460,7 +520,12 @@ def run_worker(poll_seconds: float = CLOUD_WORKER_POLL_SECONDS) -> None:
                     continue
             except Exception as exc:
                 print(f"[CloudWorker] Failed to reconcile manifest {campaign_id}: {exc}")
-                _update_worker_state(state, last_error_at=_now_utc(), last_failed_campaign_id=campaign_id)
+                _update_worker_state(
+                    state,
+                    last_error_at=_now_utc(),
+                    last_failed_campaign_id=campaign_id,
+                    last_poll_result="manifest_reconcile_failed",
+                )
                 _record_alert(
                     level="error",
                     event_type="manifest_reconcile_failed",
@@ -487,7 +552,11 @@ def run_worker(poll_seconds: float = CLOUD_WORKER_POLL_SECONDS) -> None:
                             "cloud_send_synced_at": _now_utc(),
                         },
                     )
-                    _update_worker_state(state, synced_manifests=state.get("synced_manifests", {}))
+                    _update_worker_state(
+                        state,
+                        synced_manifests=state.get("synced_manifests", {}),
+                        last_sync_campaign_id=campaign_id,
+                    )
                 due, ctx = _campaign_next_due(campaign_id)
             except Exception as exc:
                 print(f"[CloudWorker] Failed to prepare campaign {campaign_id}: {exc}")
@@ -521,7 +590,11 @@ def run_worker(poll_seconds: float = CLOUD_WORKER_POLL_SECONDS) -> None:
                 failed.add(campaign_id)
                 state.setdefault("synced_manifests", {}).pop(campaign_id, None)
                 _update_worker_state(state, failed_campaigns=sorted(failed))
-                _update_worker_state(state, last_error_at=_now_utc())
+                _update_worker_state(
+                    state,
+                    last_error_at=_now_utc(),
+                    last_poll_result="prepare_failed",
+                )
                 _record_alert(
                     level="error",
                     event_type="campaign_prepare_failed",
@@ -535,10 +608,16 @@ def run_worker(poll_seconds: float = CLOUD_WORKER_POLL_SECONDS) -> None:
 
         if not candidates:
             print("[CloudWorker] No actionable manifests found. Sleeping.")
-            _update_worker_state(state, last_idle_reason="no_actionable_manifests")
+            _update_worker_state(
+                state,
+                last_idle_reason="no_actionable_manifests",
+                last_poll_result="no_actionable_manifests",
+                last_candidate_count=0,
+            )
             time.sleep(poll_seconds)
             continue
 
+        _update_worker_state(state, last_candidate_count=len(candidates))
         candidates.sort(key=lambda item: item[0])
         due, campaign_id, manifest_uri, ctx = candidates[0]
 
@@ -561,6 +640,7 @@ def run_worker(poll_seconds: float = CLOUD_WORKER_POLL_SECONDS) -> None:
                 last_idle_reason="waiting_window",
                 last_wait_campaign_id=campaign_id,
                 last_wait_due_at=due.isoformat(),
+                last_poll_result="waiting_window",
             )
             print(
                 f"[CloudWorker] Next campaign window: {campaign_id} at {due.isoformat()} UTC | "
@@ -577,6 +657,7 @@ def run_worker(poll_seconds: float = CLOUD_WORKER_POLL_SECONDS) -> None:
                 last_idle_reason="sending",
                 last_wait_campaign_id="",
                 last_wait_due_at="",
+                last_poll_result="sending",
             )
             processed_uri = _process_campaign(campaign_id, manifest_uri, ctx)
             completed.add(campaign_id)
@@ -591,6 +672,7 @@ def run_worker(poll_seconds: float = CLOUD_WORKER_POLL_SECONDS) -> None:
                 last_completed_campaign_id=campaign_id,
                 last_processed_manifest_uri=processed_uri,
                 last_idle_reason="",
+                last_poll_result="completed_campaign",
             )
         except Exception as exc:
             print(f"[CloudWorker] Campaign failed: {campaign_id}: {exc}")
@@ -643,6 +725,7 @@ def run_worker(poll_seconds: float = CLOUD_WORKER_POLL_SECONDS) -> None:
                 failed_campaigns=sorted(failed),
                 last_failed_campaign_id=campaign_id,
                 last_idle_reason="awaiting_manual_recovery",
+                last_poll_result="send_failed",
             )
             _record_alert(
                 level="error",
