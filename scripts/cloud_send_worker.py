@@ -276,7 +276,7 @@ def _reconcile_manifest_with_run_state(
 def _list_manifest_uris() -> list[str]:
     prefix = _bucket_uri(GCS_MANIFESTS_PREFIX)
     try:
-        result = _run_cmd(["storage", "ls", f"{prefix}/**"], capture_output=True)
+        result = _run_cmd(["storage", "ls", "--recursive", prefix], capture_output=True)
     except subprocess.CalledProcessError:
         return []
     return [line.strip() for line in result.stdout.splitlines() if line.strip().endswith(".json")]
