@@ -542,13 +542,21 @@ def load_delivery_ops_snapshot() -> dict:
     cloud_sending_runs = 0
     cloud_failed_runs = 0
 
-    for job in jobs:
-        campaign_id = str(job.get("campaign_id") or "").strip()
-        send_mode = str(job.get("send_mode") or "").strip().lower()
-        if not campaign_id or send_mode != "gmail_api":
+    run_dirs = []
+    if RUNS_DIR.exists():
+        try:
+            run_dirs = [path for path in RUNS_DIR.iterdir() if path.is_dir()]
+        except Exception:
+            run_dirs = []
+
+    for run_dir in run_dirs:
+        campaign_id = run_dir.name
+        cfg = _load_run_config(run_dir)
+        send_mode = str(cfg.get("send_mode") or "").strip().lower()
+        dry_run = str(cfg.get("dry_run") or "").strip().lower() == "true"
+        if send_mode != "gmail_api" or dry_run:
             continue
 
-        run_dir = RUNS_DIR / campaign_id
         cloud_status = _read_json(run_dir / "cloud_deploy_status.json")
         cloud_send = _read_json(run_dir / "cloud_send_status.json")
         send_summary = _read_json(run_dir / "send_batch_summary.json")
@@ -575,7 +583,6 @@ def load_delivery_ops_snapshot() -> dict:
         uploaded_at = (
             cloud_status.get("cloud_deploy_uploaded_at")
             or cloud_status.get("cloud_deploy_updated_at")
-            or job.get("completed_at")
             or ""
         )
         uploaded_dt = _parse_dt(str(uploaded_at))
