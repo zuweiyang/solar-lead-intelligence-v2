@@ -246,6 +246,39 @@ Expected result:
 - email arrives with a subject like:
   - `[CloudWorker] INFO test_alert`
 
+### G. Reply / bounce sync verification
+
+Reply intelligence is now a separate scheduled VM path and should be treated as
+part of the production operating baseline.
+
+Required VM configuration:
+
+- `REPLY_INTELLIGENCE_OUR_EMAIL=<sender inbox address>`
+- Gmail OAuth token must include:
+  - `gmail.send`
+  - `gmail.readonly`
+
+Quick validation:
+
+```bash
+systemctl status reply-intelligence.timer --no-pager
+PYTHONPATH=$PWD python scripts/run_reply_intelligence.py
+cat data/reply_intelligence_status.json
+find data/crm -maxdepth 1 \( -name "reply_logs.csv" -o -name "engagement_logs.csv" \)
+```
+
+Expected result:
+
+- `reply-intelligence.timer` is enabled / waiting
+- `data/reply_intelligence_status.json` shows `status = completed`
+- `data/crm/reply_logs.csv` exists
+- `data/crm/engagement_logs.csv` exists
+
+Operational meaning:
+
+- Gmail bounce and reply messages are being ingested on the VM
+- matched bounce messages can now flow into suppression state automatically
+
 ---
 
 ## Related files

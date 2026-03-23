@@ -3445,3 +3445,51 @@ Result:
 - bounce / reply suppression is now designed to run independently from the main
   cloud-send worker loop
 - this avoids coupling inbound-reply ingestion to send timing
+
+### Reply / bounce intake live validation completed (2026-03-23)
+
+The previously missing live wiring for Workflow 7.8 / 7.5 has now been fully
+validated on the VM.
+
+Operational fixes applied during validation:
+
+- `REPLY_INTELLIGENCE_OUR_EMAIL=wayne@try-omnisol.com` added to VM `.env`
+- Gmail OAuth token re-authorized with both scopes:
+  - `https://www.googleapis.com/auth/gmail.send`
+  - `https://www.googleapis.com/auth/gmail.readonly`
+- reply-intelligence write-permission issues fixed by restoring VM user
+  ownership on `data/`
+- `scripts/authorize_gmail.py` upgraded to support a manual two-step headless
+  OAuth flow:
+  - `--manual-start`
+  - `--manual-finish --code ...`
+
+Live validation result:
+
+- `cloud-send-worker.service` recovered and returned to `active (running)`
+- `reply-intelligence.timer` remained enabled and waiting normally
+- manual run of `scripts/run_reply_intelligence.py` completed successfully
+- `data/crm/reply_logs.csv` was created
+- `data/crm/engagement_logs.csv` was created
+- `data/reply_intelligence_status.json` reported:
+  - `fetched = 15`
+  - `matched = 3`
+  - `unmatched = 12`
+  - `reply_type bounce = 8`
+  - `suppressed = 8`
+  - `paused = 7`
+
+Meaning:
+
+- bounce / reply intake is no longer only "supported in code"
+- it is now live on the VM
+- Gmail bounce messages can now flow into reply intelligence and suppression
+  state automatically
+
+Current operational interpretation for bounce handling:
+
+- send-time API success and later mailbox bounce remain separate events
+- Workflow 7 sends the email
+- Workflow 7.8 ingests later bounce/reply messages from Gmail
+- matched bounces become suppression state
+- subsequent automation can stop re-sending to those addresses
