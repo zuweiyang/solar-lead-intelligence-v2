@@ -80,6 +80,13 @@ def _run_campaign_send(campaign_id: str) -> None:
             os.environ.pop("EMAIL_SEND_MODE", None)
         else:
             os.environ["EMAIL_SEND_MODE"] = original_mode
+    success_count = int(send_summary.get("sent") or 0) + int(send_summary.get("dry_run") or 0)
+    failed_count = int(send_summary.get("failed") or 0)
+    if success_count == 0 and failed_count > 0:
+        raise RuntimeError(
+            f"Campaign send produced no successful deliveries "
+            f"(sent=0 dry_run=0 failed={failed_count})."
+        )
     print(f"[AutoSend] Send summary for {campaign_id}: {send_summary}")
     print(f"[AutoSend] Status summary updated for {campaign_id}: {status_summary}")
 
