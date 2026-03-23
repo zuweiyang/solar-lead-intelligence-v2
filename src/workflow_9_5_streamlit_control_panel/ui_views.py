@@ -1179,7 +1179,10 @@ def render_kpi_dashboard() -> None:
     if worker.get("worker_config_issue"):
         st.error(f"Cloud worker config issue: {worker['worker_config_issue']}")
     if worker.get("worker_health") in {"stalled", "offline", "misconfigured"}:
-        st.warning("Cloud worker looks stalled or offline. Check VM service health before assuming cloud send is progressing.")
+        st.warning(
+            "Cloud worker health is derived from mirrored VM state. Short GCS sync delay is possible, "
+            "so confirm VM service health before assuming cloud send is stalled or offline."
+        )
 
     with st.expander("Current Cloud Handoff Detail", expanded=False):
         d1, d2, d3 = st.columns(3)
