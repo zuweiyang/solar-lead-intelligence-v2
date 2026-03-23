@@ -15,6 +15,11 @@ playwright>=1.40.0        # for JS-rendered sites; run: playwright install chrom
 # google-maps-services-python>=4.10.0   # official Google Places API
 # serpapi>=0.1.5                         # SerpAPI alternative
 
+# Gmail API / OAuth
+google-auth>=2.38.0
+google-auth-oauthlib>=1.2.1
+google-api-python-client>=2.164.0
+
 # Scheduling
 # apscheduler>=3.10.0
 
