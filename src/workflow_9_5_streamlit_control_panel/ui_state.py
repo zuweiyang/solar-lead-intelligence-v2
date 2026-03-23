@@ -656,19 +656,24 @@ def load_delivery_ops_snapshot() -> dict:
 
     if not run_dirs or cloud_run_count == 0:
         for campaign_id in _list_gcs_run_campaign_ids():
-            cfg = _read_run_json_from_gcs(campaign_id, "campaign_run_state.json").get("config", {})
-            if not isinstance(cfg, dict):
-                cfg = {}
-            send_mode = str(cfg.get("send_mode") or "").strip().lower()
-            dry_run = str(cfg.get("dry_run") or "").strip().lower() == "true"
-            if send_mode != "gmail_api" or dry_run:
-                continue
-
             cloud_status = _read_run_json_from_gcs(campaign_id, "cloud_deploy_status.json")
             cloud_send = _read_run_json_from_gcs(campaign_id, "cloud_send_status.json")
             send_summary = _read_run_json_from_gcs(campaign_id, "send_batch_summary.json")
+            cfg = _read_run_json_from_gcs(campaign_id, "campaign_run_state.json").get("config", {})
+            if not isinstance(cfg, dict):
+                cfg = {}
+
+            send_mode = str(cfg.get("send_mode") or "").strip().lower()
+            dry_run = str(cfg.get("dry_run") or "").strip().lower() == "true"
+            if send_mode and send_mode != "gmail_api":
+                continue
+            if dry_run:
+                continue
+
             deploy_state = str(cloud_status.get("cloud_deploy_status") or "").strip().lower()
             if deploy_state != "completed":
+                continue
+            if not send_summary:
                 continue
 
             send_state = str(cloud_send.get("cloud_send_status") or "").strip().lower()
