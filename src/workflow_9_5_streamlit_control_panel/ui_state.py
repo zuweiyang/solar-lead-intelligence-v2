@@ -219,6 +219,70 @@ def _read_lines_from_gcs(filename: str) -> list[str]:
         return []
 
 
+def _runs_uri(*parts: str) -> str:
+    bucket = str(GCS_BUCKET or "").strip()
+    prefix = str(GCS_RUNS_PREFIX or "runs").strip("/").replace("\\", "/")
+    if not bucket:
+        return ""
+    clean = [part.strip("/").replace("\\", "/") for part in parts if part]
+    suffix = "/".join([prefix, *clean]) if prefix else "/".join(clean)
+    return f"gs://{bucket}/{suffix}"
+
+
+def _read_run_json_from_gcs(campaign_id: str, filename: str) -> dict:
+    gcloud_bin = _resolve_gcloud_bin()
+    uri = _runs_uri(campaign_id, filename)
+    if not gcloud_bin or not uri:
+        return {}
+    try:
+        result = subprocess.run(
+            [gcloud_bin, "storage", "cat", uri],
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+        data = json.loads(result.stdout)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _list_gcs_run_campaign_ids() -> list[str]:
+    gcloud_bin = _resolve_gcloud_bin()
+    uri = _runs_uri()
+    if not gcloud_bin or not uri:
+        return []
+    try:
+        result = subprocess.run(
+            [gcloud_bin, "storage", "ls", "--recursive", uri],
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+    except Exception:
+        return []
+
+    campaign_ids: set[str] = set()
+    target_files = {
+        "campaign_run_state.json",
+        "cloud_deploy_status.json",
+        "cloud_send_status.json",
+        "send_batch_summary.json",
+    }
+    for line in result.stdout.splitlines():
+        text = line.strip()
+        if not text.startswith("gs://") or "/" not in text:
+            continue
+        parts = text.split("/")
+        if len(parts) < 6:
+            continue
+        filename = parts[-1]
+        if filename not in target_files:
+            continue
+        campaign_ids.add(parts[-2])
+    return sorted(campaign_ids)
+
+
 def _load_run_config(run_dir: Path) -> dict:
     state_path = run_dir / "campaign_run_state.json"
     if not state_path.exists():
@@ -589,6 +653,49 @@ def load_delivery_ops_snapshot() -> dict:
         if uploaded_dt and uploaded_dt.date() == yesterday:
             uploaded_yesterday_runs += 1
             uploaded_yesterday_emails += send_total
+
+    if not run_dirs or cloud_run_count == 0:
+        for campaign_id in _list_gcs_run_campaign_ids():
+            cfg = _read_run_json_from_gcs(campaign_id, "campaign_run_state.json").get("config", {})
+            if not isinstance(cfg, dict):
+                cfg = {}
+            send_mode = str(cfg.get("send_mode") or "").strip().lower()
+            dry_run = str(cfg.get("dry_run") or "").strip().lower() == "true"
+            if send_mode != "gmail_api" or dry_run:
+                continue
+
+            cloud_status = _read_run_json_from_gcs(campaign_id, "cloud_deploy_status.json")
+            cloud_send = _read_run_json_from_gcs(campaign_id, "cloud_send_status.json")
+            send_summary = _read_run_json_from_gcs(campaign_id, "send_batch_summary.json")
+            deploy_state = str(cloud_status.get("cloud_deploy_status") or "").strip().lower()
+            if deploy_state != "completed":
+                continue
+
+            send_state = str(cloud_send.get("cloud_send_status") or "").strip().lower()
+            if send_state == "queued":
+                cloud_queued_runs += 1
+            elif send_state in {"synced", "waiting_window"}:
+                cloud_waiting_runs += 1
+            elif send_state == "sending":
+                cloud_sending_runs += 1
+            elif send_state == "failed":
+                cloud_failed_runs += 1
+
+            cloud_run_count += 1
+            send_total = int(send_summary.get("total") or 0)
+            sent_total = int(send_summary.get("sent") or 0)
+            cloud_delegated_emails += send_total
+            sent_successfully += sent_total
+
+            uploaded_at = (
+                cloud_status.get("cloud_deploy_uploaded_at")
+                or cloud_status.get("cloud_deploy_updated_at")
+                or ""
+            )
+            uploaded_dt = _parse_dt(str(uploaded_at))
+            if uploaded_dt and uploaded_dt.date() == yesterday:
+                uploaded_yesterday_runs += 1
+                uploaded_yesterday_emails += send_total
 
     send_log_rows = _read_csv(Path(str(SEND_LOGS_FILE)))
     engagement_rows = _read_csv(Path(str(ENGAGEMENT_LOGS_FILE)))
