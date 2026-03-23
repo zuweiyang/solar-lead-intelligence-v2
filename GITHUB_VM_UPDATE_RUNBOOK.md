@@ -223,6 +223,29 @@ On any new VM or fresh checkout, verify these before trusting worker output:
 - `CLOUD_SEND_ENABLED`
 - Gmail secret source settings
 
+### F. Alert verification
+
+Direct alert email is now a supported operator path.
+
+Recommended alert settings on the VM:
+
+- `CLOUD_WORKER_ALERT_EMAIL_TO=<your inbox>`
+- `CLOUD_WORKER_ALERT_EMAIL_MODE=gmail_api`
+- `CLOUD_WORKER_ALERT_EMAIL_FROM=<gmail sender address>`
+- `CLOUD_WORKER_ALERT_SUBJECT_PREFIX=[CloudWorker]`
+
+Test with:
+
+```bash
+python scripts/cloud_send_worker.py --test-alert
+```
+
+Expected result:
+
+- local alert is appended to `data/cloud_worker_alerts.jsonl`
+- email arrives with a subject like:
+  - `[CloudWorker] INFO test_alert`
+
 ---
 
 ## Related files

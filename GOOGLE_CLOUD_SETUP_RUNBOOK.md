@@ -303,6 +303,8 @@ These flows have now been validated on the live VM and bucket:
 - pinned rollback via `bash deploy/gcp/rollback_vm.sh <ref>`
 - Gmail OAuth restore from fixed runtime files and Secret Manager
 - worker recovery via `bash deploy/gcp/recover_cloud_worker.sh`
+- direct cloud worker alert email via:
+  - `python scripts/cloud_send_worker.py --test-alert`
 - manifest lifecycle:
   - queued in `manifests/`
   - claimed in `inflight/`

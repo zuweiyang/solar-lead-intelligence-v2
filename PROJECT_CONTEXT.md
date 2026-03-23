@@ -3356,3 +3356,56 @@ Live queue meaning:
 - `inflight/` = claimed / waiting / sending
 - `processed/` = completed
 - `failed/` = failed
+
+### V2 observability closure: direct email alert validated (2026-03-23)
+
+The cloud worker now supports direct operator alerts by email without relying on
+Feishu, WeCom, or third-party webhook relays.
+
+Validated configuration on the live VM:
+
+- `CLOUD_WORKER_ALERT_EMAIL_TO=yangzuwei@gmail.com`
+- `CLOUD_WORKER_ALERT_EMAIL_MODE=gmail_api`
+- `CLOUD_WORKER_ALERT_EMAIL_FROM=wayne@try-omnisol.com`
+- `CLOUD_WORKER_ALERT_SUBJECT_PREFIX=[CloudWorker]`
+
+Validation flow:
+
+1. pushed the worker email-alert code path to GitHub
+2. updated the VM with:
+   - `bash deploy/gcp/update_vm.sh`
+3. ran:
+   - `python scripts/cloud_send_worker.py --test-alert`
+4. confirmed delivery of:
+   - `[CloudWorker] INFO test_alert`
+   from `wayne@try-omnisol.com` to `yangzuwei@gmail.com`
+
+Operational note:
+
+- if alert test says delivery attempted but no email arrives, first compare VM
+  `.env` values rather than local `.env`
+- the alert sender must resolve from one of:
+  - `CLOUD_WORKER_ALERT_EMAIL_FROM`
+  - `SMTP_FROM_EMAIL`
+  - `SMTP_USERNAME`
+- `data/cloud_worker_alerts.jsonl` must remain writable by the VM user running
+  the worker
+
+### V2 stable baseline snapshot (2026-03-23)
+
+Current completion status:
+
+- `1. deployment/version management` = complete
+- `2. observability` = complete
+- `3. Gmail secret management` = complete
+- `4. cloud send result/local consistency` = complete
+- `5. worker long-run stability` = functionally complete, continue observing
+- `6. GitHub/local/cloud operating standardization` = complete
+- `7. recovery ability` = complete
+- `8. stable-version closeout` = complete
+
+Remaining watch items are now operational, not architectural:
+
+- continue observing long-running queue convergence for `inflight/`
+- optionally add `inflight` timeout reclaim in a future hardening pass
+- keep worker alert email credentials and target address current
