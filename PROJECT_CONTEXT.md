@@ -3248,3 +3248,8 @@ Operator benefit:
   obvious during long queue windows
 
 ## END OF FILE
+### V2 worker stability hardening: inflight manifest claiming (2026-03-23)
+- Root cause of repeated manifest scanning: manifests remained in `gs://.../manifests/` during `waiting_window`, so every poll re-downloaded and re-evaluated the same pending campaigns.
+- Worker now claims the selected earliest campaign by moving its manifest from `manifests/` to `inflight/` before waiting or sending.
+- While any inflight manifest exists, the worker prioritizes inflight processing instead of rescanning the visible queue on every poll.
+- New worker state fields track queue convergence: `last_inflight_count`, `last_inflight_sample`, `claimed_campaign_id`, and `claimed_manifest_uri`.

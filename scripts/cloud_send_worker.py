@@ -37,6 +37,7 @@ from config.settings import (
     DATA_DIR,
     GCS_BUCKET,
     GCS_FAILED_PREFIX,
+    GCS_INFLIGHT_PREFIX,
     GCS_MANIFESTS_PREFIX,
     GCS_PROCESSED_PREFIX,
     GCS_RUNS_PREFIX,
@@ -149,6 +150,7 @@ def _load_state() -> dict:
             state.setdefault("active_campaign_id", "")
             state.setdefault("last_idle_reason", "")
             state.setdefault("last_manifest_count", 0)
+            state.setdefault("last_inflight_count", 0)
             state.setdefault("last_wait_campaign_id", "")
             state.setdefault("last_wait_due_at", "")
             state.setdefault("last_completed_campaign_id", "")
@@ -157,11 +159,14 @@ def _load_state() -> dict:
             state.setdefault("last_poll_result", "")
             state.setdefault("last_candidate_count", 0)
             state.setdefault("last_manifest_sample", [])
+            state.setdefault("last_inflight_sample", [])
             state.setdefault("last_candidate_campaign_ids", [])
             state.setdefault("last_sync_campaign_id", "")
             state.setdefault("last_reconciled_campaign_id", "")
             state.setdefault("last_selected_campaign_id", "")
             state.setdefault("last_selected_due_at", "")
+            state.setdefault("claimed_campaign_id", "")
+            state.setdefault("claimed_manifest_uri", "")
             state.setdefault("worker_config_ok", True)
             state.setdefault("worker_config_issue", "")
             state.setdefault("worker_bucket", GCS_BUCKET)
@@ -298,13 +303,21 @@ def _reconcile_manifest_with_run_state(
     return False
 
 
-def _list_manifest_uris() -> list[str]:
-    prefix = _bucket_uri(GCS_MANIFESTS_PREFIX)
+def _list_json_uris(prefix_name: str) -> list[str]:
+    prefix = _bucket_uri(prefix_name)
     try:
         result = _run_cmd(["storage", "ls", "--recursive", prefix], capture_output=True)
     except subprocess.CalledProcessError:
         return []
     return [line.strip() for line in result.stdout.splitlines() if line.strip().endswith(".json")]
+
+
+def _list_manifest_uris() -> list[str]:
+    return _list_json_uris(GCS_MANIFESTS_PREFIX)
+
+
+def _list_inflight_manifest_uris() -> list[str]:
+    return _list_json_uris(GCS_INFLIGHT_PREFIX)
 
 
 def _download_manifest(manifest_uri: str) -> dict:
@@ -352,6 +365,13 @@ def _upload_run_outputs(campaign_id: str) -> dict[str, float | int]:
     stats = _upload_directory(run_dir, run_uri)
     print(f"[CloudWorker] Uploaded updated outputs for {campaign_id} -> {run_uri}")
     return stats
+
+
+def _claim_manifest(manifest_uri: str, campaign_id: str) -> str:
+    claimed_uri = _bucket_uri(GCS_INFLIGHT_PREFIX, f"{campaign_id}.json")
+    _run_cmd(["storage", "mv", manifest_uri, claimed_uri])
+    print(f"[CloudWorker] Claimed manifest into inflight: {claimed_uri}")
+    return claimed_uri
 
 
 def _mark_manifest_processed(manifest_uri: str, campaign_id: str) -> str:
@@ -461,11 +481,15 @@ def run_worker(poll_seconds: float = CLOUD_WORKER_POLL_SECONDS) -> None:
                 last_idle_reason="config_error",
                 last_poll_result="config_error",
                 last_manifest_count=0,
+                last_inflight_count=0,
                 last_candidate_count=0,
                 last_manifest_sample=[],
+                last_inflight_sample=[],
                 last_candidate_campaign_ids=[],
                 last_selected_campaign_id="",
                 last_selected_due_at="",
+                claimed_campaign_id="",
+                claimed_manifest_uri="",
             )
             _record_alert(
                 level="error",
@@ -478,13 +502,16 @@ def run_worker(poll_seconds: float = CLOUD_WORKER_POLL_SECONDS) -> None:
             )
             time.sleep(poll_seconds)
             continue
+        inflight_manifest_uris = _list_inflight_manifest_uris()
         manifest_uris = _list_manifest_uris()
         _update_worker_state(
             state,
             last_manifest_count=len(manifest_uris),
             last_manifest_sample=manifest_uris[:3],
+            last_inflight_count=len(inflight_manifest_uris),
+            last_inflight_sample=inflight_manifest_uris[:3],
         )
-        if not manifest_uris:
+        if not inflight_manifest_uris and not manifest_uris:
             print("[CloudWorker] No manifests found. Sleeping.")
             _update_worker_state(
                 state,
@@ -494,12 +521,17 @@ def run_worker(poll_seconds: float = CLOUD_WORKER_POLL_SECONDS) -> None:
                 last_candidate_campaign_ids=[],
                 last_selected_campaign_id="",
                 last_selected_due_at="",
+                claimed_campaign_id="",
+                claimed_manifest_uri="",
             )
             time.sleep(poll_seconds)
             continue
 
-        candidates: list[tuple[datetime, str, str, dict]] = []
-        for manifest_uri in manifest_uris:
+        inflight_candidates: list[tuple[datetime, str, str, dict]] = []
+        visible_candidates: list[tuple[datetime, str, str, dict]] = []
+        source_manifest_uris = inflight_manifest_uris or manifest_uris
+
+        for manifest_uri in source_manifest_uris:
             try:
                 manifest = _download_manifest(manifest_uri)
             except Exception as exc:
@@ -613,9 +645,28 @@ def run_worker(poll_seconds: float = CLOUD_WORKER_POLL_SECONDS) -> None:
                 )
                 continue
 
-            candidates.append((due, campaign_id, manifest_uri, ctx))
+            if inflight_manifest_uris:
+                inflight_candidates.append((due, campaign_id, manifest_uri, ctx))
+            else:
+                visible_candidates.append((due, campaign_id, manifest_uri, ctx))
 
-        if not candidates:
+        if inflight_manifest_uris and not inflight_candidates:
+            print("[CloudWorker] No actionable inflight manifests found. Sleeping.")
+            _update_worker_state(
+                state,
+                last_idle_reason="no_actionable_inflight_manifests",
+                last_poll_result="no_actionable_inflight_manifests",
+                last_candidate_count=0,
+                last_candidate_campaign_ids=[],
+                last_selected_campaign_id="",
+                last_selected_due_at="",
+                claimed_campaign_id="",
+                claimed_manifest_uri="",
+            )
+            time.sleep(poll_seconds)
+            continue
+
+        if not inflight_manifest_uris and not visible_candidates:
             print("[CloudWorker] No actionable manifests found. Sleeping.")
             _update_worker_state(
                 state,
@@ -625,17 +676,44 @@ def run_worker(poll_seconds: float = CLOUD_WORKER_POLL_SECONDS) -> None:
                 last_candidate_campaign_ids=[],
                 last_selected_campaign_id="",
                 last_selected_due_at="",
+                claimed_campaign_id="",
+                claimed_manifest_uri="",
             )
             time.sleep(poll_seconds)
             continue
+
+        candidates = inflight_candidates if inflight_manifest_uris else visible_candidates
+        candidates.sort(key=lambda item: item[0])
+        due, campaign_id, manifest_uri, ctx = candidates[0]
+
+        if not inflight_manifest_uris:
+            try:
+                manifest_uri = _claim_manifest(manifest_uri, campaign_id)
+            except Exception as exc:
+                print(f"[CloudWorker] Failed to claim manifest {campaign_id}: {exc}")
+                _update_worker_state(
+                    state,
+                    last_error_at=_now_utc(),
+                    last_failed_campaign_id=campaign_id,
+                    last_poll_result="manifest_claim_failed",
+                )
+                _record_alert(
+                    level="error",
+                    event_type="manifest_claim_failed",
+                    message=str(exc),
+                    campaign_id=campaign_id,
+                    manifest_uri=manifest_uri,
+                )
+                time.sleep(poll_seconds)
+                continue
 
         _update_worker_state(
             state,
             last_candidate_count=len(candidates),
             last_candidate_campaign_ids=[campaign for _, campaign, _, _ in candidates[:5]],
+            claimed_campaign_id=campaign_id,
+            claimed_manifest_uri=manifest_uri,
         )
-        candidates.sort(key=lambda item: item[0])
-        due, campaign_id, manifest_uri, ctx = candidates[0]
         selection_now = datetime.now(tz=timezone.utc)
 
         if due > selection_now:
@@ -660,6 +738,8 @@ def run_worker(poll_seconds: float = CLOUD_WORKER_POLL_SECONDS) -> None:
                 last_poll_result="waiting_window",
                 last_selected_campaign_id=campaign_id,
                 last_selected_due_at=due.isoformat(),
+                claimed_campaign_id=campaign_id,
+                claimed_manifest_uri=manifest_uri,
             )
             print(
                 f"[CloudWorker] Next campaign window: {campaign_id} at {due.isoformat()} UTC | "
@@ -679,6 +759,8 @@ def run_worker(poll_seconds: float = CLOUD_WORKER_POLL_SECONDS) -> None:
                 last_poll_result="sending",
                 last_selected_campaign_id=campaign_id,
                 last_selected_due_at=due.isoformat(),
+                claimed_campaign_id=campaign_id,
+                claimed_manifest_uri=manifest_uri,
             )
             processed_uri = _process_campaign(campaign_id, manifest_uri, ctx)
             completed.add(campaign_id)
@@ -696,6 +778,8 @@ def run_worker(poll_seconds: float = CLOUD_WORKER_POLL_SECONDS) -> None:
                 last_poll_result="completed_campaign",
                 last_selected_campaign_id=campaign_id,
                 last_selected_due_at=due.isoformat(),
+                claimed_campaign_id="",
+                claimed_manifest_uri="",
             )
         except Exception as exc:
             print(f"[CloudWorker] Campaign failed: {campaign_id}: {exc}")
@@ -751,6 +835,8 @@ def run_worker(poll_seconds: float = CLOUD_WORKER_POLL_SECONDS) -> None:
                 last_poll_result="send_failed",
                 last_selected_campaign_id=campaign_id,
                 last_selected_due_at=due.isoformat(),
+                claimed_campaign_id="",
+                claimed_manifest_uri="",
             )
             _record_alert(
                 level="error",

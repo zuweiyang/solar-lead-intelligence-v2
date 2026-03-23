@@ -1143,6 +1143,7 @@ def render_kpi_dashboard() -> None:
         f"Bucket: {worker.get('worker_bucket') or 'n/a'} | "
         f"Manifest prefix: {worker.get('worker_manifests_prefix') or 'n/a'} | "
         f"Manifest count: {worker.get('last_manifest_count') or 0} | "
+        f"Inflight count: {worker.get('last_inflight_count') or 0} | "
         f"Actionable candidates: {worker.get('last_candidate_count') or 0}"
     )
     if worker.get("last_sync_campaign_id") or worker.get("last_reconciled_campaign_id"):
@@ -1155,12 +1156,20 @@ def render_kpi_dashboard() -> None:
             f"Selected campaign: {worker.get('last_selected_campaign_id') or 'n/a'} | "
             f"Selected due: {worker.get('last_selected_due_at') or 'n/a'}"
         )
+    if worker.get("claimed_campaign_id") or worker.get("claimed_manifest_uri"):
+        st.caption(
+            f"Claimed campaign: {worker.get('claimed_campaign_id') or 'n/a'} | "
+            f"Claimed manifest: {worker.get('claimed_manifest_uri') or 'n/a'}"
+        )
     if worker.get("last_candidate_campaign_ids"):
         candidate_sample = worker.get("last_candidate_campaign_ids") or []
         st.caption("Candidate sample: " + " | ".join(candidate_sample[:5]))
     if worker.get("last_manifest_sample"):
         sample = worker.get("last_manifest_sample") or []
         st.caption("Manifest sample: " + " | ".join(sample[:3]))
+    if worker.get("last_inflight_sample"):
+        sample = worker.get("last_inflight_sample") or []
+        st.caption("Inflight sample: " + " | ".join(sample[:3]))
     if worker.get("last_alert_message"):
         st.caption(
             f"Last alert: {worker.get('last_alert_at') or 'n/a'} | "
