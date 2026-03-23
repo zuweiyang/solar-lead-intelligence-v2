@@ -74,8 +74,31 @@ copy_from_secret_manager() {
   command -v gcloud >/dev/null 2>&1 || fail "gcloud is required for Secret Manager restore"
 
   mkdir -p "$CONFIG_DIR"
-  gcloud secrets versions access latest --secret="$SOLAR_GMAIL_CLIENT_SECRET_NAME" > "$CLIENT_TARGET"
-  gcloud secrets versions access latest --secret="$SOLAR_GMAIL_TOKEN_SECRET_NAME" > "$TOKEN_TARGET"
+  local client_tmp
+  local token_tmp
+  client_tmp="$(mktemp)"
+  token_tmp="$(mktemp)"
+
+  if ! gcloud secrets versions access latest --secret="$SOLAR_GMAIL_CLIENT_SECRET_NAME" > "$client_tmp"; then
+    rm -f "$client_tmp" "$token_tmp"
+    fail "Unable to access Secret Manager secret: $SOLAR_GMAIL_CLIENT_SECRET_NAME"
+  fi
+  if ! gcloud secrets versions access latest --secret="$SOLAR_GMAIL_TOKEN_SECRET_NAME" > "$token_tmp"; then
+    rm -f "$client_tmp" "$token_tmp"
+    fail "Unable to access Secret Manager secret: $SOLAR_GMAIL_TOKEN_SECRET_NAME"
+  fi
+  if ! ensure_file_ok "$client_tmp"; then
+    rm -f "$client_tmp" "$token_tmp"
+    fail "Secret Manager returned empty content for: $SOLAR_GMAIL_CLIENT_SECRET_NAME"
+  fi
+  if ! ensure_file_ok "$token_tmp"; then
+    rm -f "$client_tmp" "$token_tmp"
+    fail "Secret Manager returned empty content for: $SOLAR_GMAIL_TOKEN_SECRET_NAME"
+  fi
+
+  cp "$client_tmp" "$CLIENT_TARGET"
+  cp "$token_tmp" "$TOKEN_TARGET"
+  rm -f "$client_tmp" "$token_tmp"
   chmod 600 "$CLIENT_TARGET" "$TOKEN_TARGET"
   log "[restore-gmail-oauth] Restored Gmail OAuth files from Secret Manager"
 }

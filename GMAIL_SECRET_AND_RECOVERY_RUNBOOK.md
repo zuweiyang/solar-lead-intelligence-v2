@@ -69,6 +69,20 @@ bash deploy/gcp/recover_cloud_worker.sh --skip-update
 This path is now fully scripted; the remaining work is just applying it in your
 live GCP project.
 
+Important:
+
+- the VM runtime identity must also have Secret Manager read access
+- minimum required permission:
+  - `secretmanager.versions.access`
+- in practice, grant the VM service account Secret Manager Secret Accessor
+
+Safety note:
+
+- `restore_gmail_oauth.sh` now restores Secret Manager values through temporary
+  files first
+- if access is denied or Secret Manager returns empty content, the script fails
+  explicitly instead of leaving behind empty OAuth files
+
 ---
 
 ## Standard restore command

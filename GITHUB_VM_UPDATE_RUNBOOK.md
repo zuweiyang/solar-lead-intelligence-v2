@@ -41,6 +41,21 @@ Then create the VM env file:
 cp deploy/gcp/.env.gcp.example .env
 ```
 
+Before starting the worker, replace all placeholder runtime values with the
+real environment values from the previously working VM, especially:
+
+- `GCS_BUCKET`
+- `GCS_RUNS_PREFIX`
+- `GCS_MANIFESTS_PREFIX`
+- `EMAIL_SEND_MODE`
+- `CLOUD_SEND_ENABLED`
+- Gmail secret source settings
+
+On March 23, 2026 a new VM checkout initially kept the placeholder
+`GCS_BUCKET=your-gcs-bucket-name`, which made the worker appear healthy while it
+silently polled the wrong manifest queue. Real production bucket in the live
+environment was `emailoutbound`.
+
 ---
 
 ## Standard update flow

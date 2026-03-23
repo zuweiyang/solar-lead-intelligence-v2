@@ -3034,4 +3034,110 @@ Systemd cleanup:
   - removes the VM warning:
     - `Unknown key 'StartLimitIntervalSec' in section [Service], ignoring.`
 
+### V2 VM config drift incident: GCS bucket mismatch (2026-03-23)
+
+Issue observed after the new GitHub-based VM checkout was brought online:
+
+- `cloud-send-worker.service` was healthy
+- Gmail OAuth validation passed
+- real manifests existed in GCS under:
+  - `gs://emailoutbound/manifests/...`
+- but worker state still showed:
+  - `last_manifest_count = 0`
+  - `last_idle_reason = no_manifests`
+
+Root cause:
+
+- the new VM `.env` had been created from `deploy/gcp/.env.gcp.example`
+- `GCS_BUCKET` was still the placeholder value:
+  - `your-gcs-bucket-name`
+- the worker therefore polled:
+  - `gs://your-gcs-bucket-name/manifests`
+  instead of the live bucket:
+  - `gs://emailoutbound/manifests`
+
+Impact:
+
+- previously uploaded Brazil campaigns were not lost
+- no re-queue or re-generation was needed
+- the worker simply could not see the live manifest queue until the bucket was corrected
+
+Fix applied on the VM:
+
+- updated `.env`:
+  - `GCS_BUCKET=emailoutbound`
+- restarted via:
+  - `bash deploy/gcp/update_vm.sh`
+- verified:
+  - `_list_manifest_uris()` returned the expected manifest list
+  - worker state moved from `0` manifests to the real manifest count
+  - worker began syncing queued campaigns from GCS
+
+Operator rule added:
+
+- after bootstrapping any new VM or new GitHub checkout, compare the new `.env`
+  against the previously working environment before trusting worker state
+- minimum required checks:
+  - `GCS_BUCKET`
+  - `GCS_RUNS_PREFIX`
+  - `GCS_MANIFESTS_PREFIX`
+  - `EMAIL_SEND_MODE`
+  - `CLOUD_SEND_ENABLED`
+  - Gmail secret source configuration:
+    - `SOLAR_SECRET_SOURCE_DIR`
+    - or `SOLAR_GMAIL_CLIENT_SECRET_NAME` / `SOLAR_GMAIL_TOKEN_SECRET_NAME`
+
+Key lesson:
+
+- if worker state says `no_manifests` but direct `gcloud storage ls` against the
+  real bucket shows manifests, treat it as environment-config drift first,
+  not as lost campaigns.
+
+### V2 recovery drill finding: Secret Manager read permission gap (2026-03-23)
+
+Recovery drill scenario:
+
+- intentionally removed:
+  - `config/gmail_client_secret.json`
+  - `config/gmail_token.json`
+- then ran:
+  - `bash deploy/gcp/restore_gmail_oauth.sh --force`
+
+Observed result:
+
+- VM service account could not read Secret Manager values
+- GCP returned:
+  - `secretmanager.versions.access` permission denied
+- this exposed a real recovery gap:
+  - Secret Manager publish was configured
+  - but VM runtime identity still lacked read access
+
+Code hardening applied:
+
+- `deploy/gcp/restore_gmail_oauth.sh`
+  - Secret Manager restore now writes into temporary files first
+  - only promotes them into `config/` if both files are non-empty
+  - permissions or empty-secret failures now raise explicit errors
+  - avoids previous false-positive behavior where empty target files could be
+    left behind after a failed read
+
+Operational requirement added:
+
+- VM runtime identity must have Secret Manager read access before Secret Manager
+  is considered a valid recovery source
+- required permission:
+  - `secretmanager.versions.access`
+- practical fix:
+  - grant Secret Manager Secret Accessor to the VM service account
+    `503580949036-compute@developer.gserviceaccount.com`
+
+Recovery status after drill:
+
+- runtime OAuth files were restored from backup
+- `bash deploy/gcp/recover_cloud_worker.sh --skip-update` returned the worker to
+  healthy state
+- restart recovery path is good
+- Secret Manager recovery path is code-safe now, but still needs IAM access to
+  be fully validated in production
+
 ## END OF FILE
