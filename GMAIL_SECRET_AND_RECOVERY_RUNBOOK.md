@@ -16,6 +16,35 @@ Final runtime file paths stay the same:
 - `config/gmail_client_secret.json`
 - `config/gmail_token.json`
 
+Recommended fixed recovery source on the VM:
+
+- set `SOLAR_SECRET_SOURCE_DIR` to an absolute path outside the repo
+- example:
+  - `/home/<vm-user>/solar-secrets/gmail`
+
+---
+
+## Recommended one-time hardening
+
+After Gmail OAuth is working on the VM, stage the current files into the fixed
+recovery directory:
+
+```bash
+mkdir -p /home/<vm-user>/solar-secrets/gmail
+export SOLAR_SECRET_SOURCE_DIR=/home/<vm-user>/solar-secrets/gmail
+bash deploy/gcp/stage_gmail_oauth.sh
+```
+
+This copies:
+
+- `config/gmail_client_secret.json`
+- `config/gmail_token.json`
+
+into the stable restore source directory with `600` permissions.
+
+That means future VM recovery can rely on one predictable path instead of
+re-uploading OAuth files by hand.
+
 ---
 
 ## Standard restore command
@@ -87,10 +116,21 @@ bash deploy/gcp/recover_cloud_worker.sh --skip-update
 
 This makes token replacement explicit and repeatable.
 
+If you use the fixed recovery directory approach, the token refresh path becomes:
+
+1. replace the staged token in `SOLAR_SECRET_SOURCE_DIR`
+2. run:
+
+```bash
+bash deploy/gcp/restore_gmail_oauth.sh --force
+bash deploy/gcp/recover_cloud_worker.sh --skip-update
+```
+
 ---
 
 ## Related files
 
+- [stage_gmail_oauth.sh](/d:/solar-lead-intelligence/deploy/gcp/stage_gmail_oauth.sh)
 - [restore_gmail_oauth.sh](/d:/solar-lead-intelligence/deploy/gcp/restore_gmail_oauth.sh)
 - [recover_cloud_worker.sh](/d:/solar-lead-intelligence/deploy/gcp/recover_cloud_worker.sh)
 - [.env.gcp.example](/d:/solar-lead-intelligence/deploy/gcp/.env.gcp.example)

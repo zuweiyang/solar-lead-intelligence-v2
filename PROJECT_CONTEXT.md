@@ -2976,4 +2976,51 @@ Intent:
 - make failure recovery more explicit because each failed manifest now has a
   durable failed-location URI
 
+### V2 deploy + Gmail recovery closure (2026-03-23)
+
+Real VM validation now completed against the GitHub-hosted
+`solar-lead-intelligence-v2` checkout.
+
+Deployment/version-management validation:
+
+- verified `bash deploy/gcp/update_vm.sh` from the VM clone
+- verified `data/deploy_release.json` writes branch / commit / requested ref
+- verified `bash deploy/gcp/release_status.sh`
+- verified `bash deploy/gcp/rollback_vm.sh <commit>`
+- verified return from pinned detached-HEAD deploy back to `main`
+- verified `cloud-send-worker.service` remains healthy after update and rollback
+
+Path-hardening changes made during validation:
+
+- `deploy/gcp/update_vm.sh`
+- `deploy/gcp/bootstrap_vm.sh`
+- `deploy/gcp/restore_gmail_oauth.sh`
+- `deploy/gcp/recover_cloud_worker.sh`
+- `deploy/gcp/release_status.sh`
+- `deploy/gcp/rollback_vm.sh`
+- `deploy/gcp/systemd/cloud-send-worker.service`
+
+These now resolve the current repo location instead of assuming the legacy
+`/opt/solar-lead-intelligence` path.
+
+Gmail secret-management hardening:
+
+- `.env.gcp.example` now recommends setting a fixed absolute
+  `SOLAR_SECRET_SOURCE_DIR` outside the repo
+- new helper:
+  - `deploy/gcp/stage_gmail_oauth.sh`
+- purpose:
+  - copy working `config/gmail_client_secret.json` and `config/gmail_token.json`
+    into the fixed restore-source directory
+  - give VM rebuilds and token refreshes one predictable restore location
+  - reduce future operator reliance on manual re-upload
+
+Recommended operator sequence after Gmail OAuth is confirmed working:
+
+1. set `SOLAR_SECRET_SOURCE_DIR` in `.env` to a stable absolute VM path
+2. run `bash deploy/gcp/stage_gmail_oauth.sh`
+3. future recoveries use:
+   - `bash deploy/gcp/restore_gmail_oauth.sh --force`
+   - `bash deploy/gcp/recover_cloud_worker.sh --skip-update`
+
 ## END OF FILE

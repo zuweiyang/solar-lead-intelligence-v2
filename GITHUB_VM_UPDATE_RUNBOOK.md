@@ -51,6 +51,14 @@ After code is pushed to GitHub, update the VM with:
 bash deploy/gcp/update_vm.sh
 ```
 
+Verified on March 23, 2026 against the GitHub-hosted
+`solar-lead-intelligence-v2` checkout on the VM:
+
+- branch update from GitHub succeeded
+- `.venv` refresh succeeded
+- `data/deploy_release.json` was written
+- `cloud-send-worker.service` restarted into `active (running)`
+
 What it does:
 
 - `git fetch --tags --prune`
@@ -112,6 +120,12 @@ bash deploy/gcp/rollback_vm.sh <git-tag-or-commit>
 
 This reuses the same update path but pins the VM to the exact requested ref.
 
+Verified on March 23, 2026 with a pinned commit rollback and return-to-main flow:
+
+- pinned commit checkout succeeded
+- worker restarted successfully while detached at the pinned ref
+- returning to `main` via `bash deploy/gcp/update_vm.sh` restored normal branch mode
+
 Recommended rollback target:
 
 - a Git tag
@@ -147,5 +161,6 @@ Recommended operator habit:
 - [rollback_vm.sh](/d:/solar-lead-intelligence/deploy/gcp/rollback_vm.sh)
 - [release_status.sh](/d:/solar-lead-intelligence/deploy/gcp/release_status.sh)
 - [recover_cloud_worker.sh](/d:/solar-lead-intelligence/deploy/gcp/recover_cloud_worker.sh)
+- [stage_gmail_oauth.sh](/d:/solar-lead-intelligence/deploy/gcp/stage_gmail_oauth.sh)
 - [cloud-send-worker.service](/d:/solar-lead-intelligence/deploy/gcp/systemd/cloud-send-worker.service)
 - [GOOGLE_CLOUD_SETUP_RUNBOOK.md](/d:/solar-lead-intelligence/GOOGLE_CLOUD_SETUP_RUNBOOK.md)
