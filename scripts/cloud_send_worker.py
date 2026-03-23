@@ -1032,12 +1032,31 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="Google Cloud VM send worker")
     parser.add_argument(
+        "--test-alert",
+        action="store_true",
+        help="Send a test cloud worker alert through configured alert channels and exit",
+    )
+    parser.add_argument(
         "--poll",
         type=float,
         default=CLOUD_WORKER_POLL_SECONDS,
         help="Idle poll interval in seconds",
     )
     args = parser.parse_args()
+    if args.test_alert:
+        _record_alert(
+            level="info",
+            event_type="test_alert",
+            message="Manual cloud worker alert test.",
+            details={
+                "source": "cloud_send_worker.py",
+                "alert_email_to": CLOUD_WORKER_ALERT_EMAIL_TO,
+                "alert_email_mode": CLOUD_WORKER_ALERT_EMAIL_MODE,
+                "alert_webhook_enabled": bool(CLOUD_WORKER_ALERT_WEBHOOK),
+            },
+        )
+        print("[CloudWorker] Test alert recorded and delivery attempted.")
+        return
     run_worker(poll_seconds=args.poll)
 
 
