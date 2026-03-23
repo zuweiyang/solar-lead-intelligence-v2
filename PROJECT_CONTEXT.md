@@ -3247,9 +3247,112 @@ Operator benefit:
 - this makes "why is the worker idle?" and "which run will go next?" much more
   obvious during long queue windows
 
-## END OF FILE
 ### V2 worker stability hardening: inflight manifest claiming (2026-03-23)
 - Root cause of repeated manifest scanning: manifests remained in `gs://.../manifests/` during `waiting_window`, so every poll re-downloaded and re-evaluated the same pending campaigns.
 - Worker now claims the selected earliest campaign by moving its manifest from `manifests/` to `inflight/` before waiting or sending.
 - While any inflight manifest exists, the worker prioritizes inflight processing instead of rescanning the visible queue on every poll.
 - New worker state fields track queue convergence: `last_inflight_count`, `last_inflight_sample`, `claimed_campaign_id`, and `claimed_manifest_uri`.
+
+### V2 worker stability validation: inflight + failure routing confirmed on VM (2026-03-23)
+
+Real VM behavior now confirms the intended queue lifecycle:
+
+- `sao-paulo_20260322_140220_648a` was claimed into:
+  - `gs://emailoutbound/inflight/sao-paulo_20260322_140220_648a.json`
+- `sao-bernardo-do-campo_20260322_164133_5ad8` failed after entering inflight and was routed to:
+  - `gs://emailoutbound/failed/sao-bernardo-do-campo_20260322_164133_5ad8-1774269084.json`
+- completed runs are now collecting under:
+  - `gs://emailoutbound/processed/...`
+
+This validates that V2 no longer relies on repeated full rescans of `manifests/`
+for selected campaigns, and failed sends no longer need to masquerade as
+completed queue work.
+
+### V2 Gmail send correctness hardening: zero-success batches must fail (2026-03-23)
+
+Root cause:
+
+- `scripts/auto_send_runs.py` treated Workflow 7 as successful whenever
+  `run_send()` returned without raising, even if the batch had:
+  - `sent = 0`
+  - `dry_run = 0`
+  - `failed > 0`
+
+Fix:
+
+- `_run_campaign_send()` now raises when a batch produces zero successful
+  deliveries but one or more failures.
+- This ensures the cloud worker sends those campaigns to the `failed/` queue
+  path instead of `processed/`.
+
+### V2 Gmail runtime dependency gap fixed on VM (2026-03-23)
+
+Root cause:
+
+- Gmail API runtime packages were missing from `requirements.txt`, so VM sends
+  could fail with:
+  - `No module named 'google'`
+
+Fix:
+
+- Added required Gmail API packages to `requirements.txt`:
+  - `google-auth`
+  - `google-auth-oauthlib`
+  - `google-api-python-client`
+- VM verification completed successfully:
+  - `python -c "import google.oauth2.credentials, google_auth_oauthlib.flow, googleapiclient.discovery; print('google deps ok')"`
+  - output: `google deps ok`
+
+### V2 result consistency closure: deploy status backfill validated (2026-03-23)
+
+The remaining state-consistency gap was that some historical runs still had:
+
+- `cloud_deploy_status = started`
+
+even though the cloud worker had already taken over and later produced
+`synced`, `sending`, `completed`, or `failed` send states.
+
+Fix:
+
+- `scripts/cloud_send_worker.py` now backfills local `cloud_deploy_status.json`
+  to `completed` whenever a run is already under cloud-worker management.
+- Backfill runs every worker loop, so older runs no longer depend on being
+  selected again before their deploy state is corrected.
+
+VM validation:
+
+- `sao-bernardo-do-campo_20260322_164133_5ad8`
+- `santo-andre_20260322_170155_2c77`
+- `sorocaba_20260322_175256_9118`
+
+all now show:
+
+- `cloud_deploy_status = completed`
+- `cloud_deploy_reconciled_at = ...`
+
+This closes V2 item `4. cloud send result and local state consistency`.
+
+### V2 standard operator workflow snapshot (2026-03-23)
+
+Current working release process:
+
+1. make and validate changes locally
+2. mirror release-ready files into `_github_export`
+3. commit and push from `_github_export`
+4. on the VM, run:
+   - `bash deploy/gcp/update_vm.sh`
+5. verify:
+   - `bash deploy/gcp/release_status.sh`
+   - `systemctl status cloud-send-worker`
+   - `cat data/cloud_send_worker_state.json`
+6. if recovery is needed:
+   - `bash deploy/gcp/recover_cloud_worker.sh`
+7. if rollback is needed:
+   - `bash deploy/gcp/rollback_vm.sh <git-tag-or-commit>`
+
+Live queue meaning:
+
+- `manifests/` = queued
+- `inflight/` = claimed / waiting / sending
+- `processed/` = completed
+- `failed/` = failed

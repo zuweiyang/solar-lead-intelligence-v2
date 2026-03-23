@@ -117,22 +117,24 @@ bash deploy/gcp/restore_gmail_oauth.sh
 
 ## Phase 3: Install the worker service
 
-Copy the service unit:
+Use the standard VM update path to render and install the service:
 
 ```bash
-sudo cp deploy/gcp/systemd/cloud-send-worker.service /etc/systemd/system/cloud-send-worker.service
-sudo systemctl daemon-reload
-sudo systemctl enable cloud-send-worker
+bash deploy/gcp/update_vm.sh
 ```
 
-Before starting, make sure the repo path matches the service file:
+This now handles:
 
-- `/opt/solar-lead-intelligence`
+- branch sync from GitHub
+- dependency refresh in `.venv`
+- systemd unit refresh
+- worker restart
+- release metadata write to `data/deploy_release.json`
 
-Then start it:
+If you need a first-time manual enable on a brand new VM:
 
 ```bash
-sudo systemctl start cloud-send-worker
+sudo systemctl enable cloud-send-worker
 sudo systemctl status cloud-send-worker
 ```
 
@@ -287,6 +289,23 @@ bash deploy/gcp/recover_cloud_worker.sh
 
 ## Known first-version limits
 
-- `deploy_run_to_gcloud.py` and `cloud_send_worker.py` still need one real GCS roundtrip validation
 - Gmail OAuth restore is now standardized, but token issuance itself is still an external operator action
 - the worker is single-process by design in V1
+- `CLOUD_WORKER_ALERT_WEBHOOK` is still optional; active webhook alert delivery is not validated until a real webhook target is configured
+
+---
+
+## Current validated V2 behavior
+
+These flows have now been validated on the live VM and bucket:
+
+- GitHub push -> `bash deploy/gcp/update_vm.sh` -> worker restart
+- pinned rollback via `bash deploy/gcp/rollback_vm.sh <ref>`
+- Gmail OAuth restore from fixed runtime files and Secret Manager
+- worker recovery via `bash deploy/gcp/recover_cloud_worker.sh`
+- manifest lifecycle:
+  - queued in `manifests/`
+  - claimed in `inflight/`
+  - completed in `processed/`
+  - failed in `failed/`
+- deploy/send status reconciliation across local run files and GCS queue state

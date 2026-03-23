@@ -160,12 +160,68 @@ Recommended operator habit:
 
 1. make changes locally
 2. run your local checks
-3. push to GitHub
-4. SSH to the VM
-5. run `bash deploy/gcp/update_vm.sh`
-6. confirm `systemctl status cloud-send-worker`
-7. confirm `data/deploy_release.json`
-8. if needed, use `bash deploy/gcp/rollback_vm.sh <tag-or-commit>`
+3. mirror the finalized changes into `_github_export`
+4. push to GitHub
+5. SSH to the VM
+6. run `bash deploy/gcp/update_vm.sh`
+7. confirm `systemctl status cloud-send-worker`
+8. confirm `data/deploy_release.json`
+9. if needed, use `bash deploy/gcp/rollback_vm.sh <tag-or-commit>`
+
+---
+
+## Standard operator workflow
+
+This is the current V2 day-to-day sequence that has been validated on the live
+`emailoutbound` environment.
+
+### A. Local code change
+
+1. edit and test in the local working tree
+2. mirror the release-ready files into `_github_export`
+3. commit and push from `_github_export`
+
+### B. VM release update
+
+1. SSH to the VM checkout
+2. run:
+
+```bash
+bash deploy/gcp/update_vm.sh
+```
+
+3. confirm:
+   - `bash deploy/gcp/release_status.sh`
+   - `systemctl status cloud-send-worker`
+   - `cat data/cloud_send_worker_state.json`
+
+### C. Queue verification
+
+Use these paths to understand live queue state:
+
+- `gs://<bucket>/manifests/` = queued and not yet claimed
+- `gs://<bucket>/inflight/` = claimed / waiting / sending
+- `gs://<bucket>/processed/` = completed
+- `gs://<bucket>/failed/` = failed
+
+### D. Recovery / rollback
+
+- worker or secret issue:
+  - `bash deploy/gcp/recover_cloud_worker.sh`
+- bad release:
+  - `bash deploy/gcp/rollback_vm.sh <git-tag-or-commit>`
+
+### E. Configuration drift check
+
+On any new VM or fresh checkout, verify these before trusting worker output:
+
+- `GCS_BUCKET`
+- `GCS_RUNS_PREFIX`
+- `GCS_MANIFESTS_PREFIX`
+- `GCS_INFLIGHT_PREFIX`
+- `EMAIL_SEND_MODE`
+- `CLOUD_SEND_ENABLED`
+- Gmail secret source settings
 
 ---
 
