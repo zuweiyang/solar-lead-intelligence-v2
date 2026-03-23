@@ -45,6 +45,13 @@ fi
 
 cd "$PROJECT_ROOT"
 
+if [[ -f "$PROJECT_ROOT/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$PROJECT_ROOT/.env"
+  set +a
+fi
+
 echo "[update-vm] Fetching latest code from $REMOTE_NAME"
 git fetch --tags --prune "$REMOTE_NAME"
 
@@ -105,6 +112,15 @@ cat > "$release_file" <<EOF
 EOF
 
 echo "[update-vm] Wrote release metadata to $release_file"
+
+if [[ -n "${GCS_BUCKET:-}" ]]; then
+  status_prefix="${GCS_STATUS_PREFIX:-ops}"
+  release_uri="gs://${GCS_BUCKET}/${status_prefix%/}/$(basename "$release_file")"
+  if command -v gcloud >/dev/null 2>&1; then
+    echo "[update-vm] Uploading release metadata mirror to $release_uri"
+    gcloud storage cp "$release_file" "$release_uri" >/dev/null || true
+  fi
+fi
 
 if compgen -G "$PROJECT_ROOT/deploy/gcp/systemd/*" > /dev/null; then
   echo "[update-vm] Refreshing systemd unit"

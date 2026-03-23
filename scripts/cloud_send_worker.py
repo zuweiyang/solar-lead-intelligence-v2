@@ -48,6 +48,7 @@ from config.settings import (
     GCS_MANIFESTS_PREFIX,
     GCS_PROCESSED_PREFIX,
     GCS_RUNS_PREFIX,
+    GCS_STATUS_PREFIX,
     RUNS_DIR,
     SMTP_FROM_EMAIL,
     SMTP_FROM_NAME,
@@ -113,6 +114,18 @@ def _run_cmd(args: list[str], capture_output: bool = False) -> subprocess.Comple
         text=True,
         capture_output=capture_output,
     )
+
+
+def _status_uri(filename: str) -> str:
+    return _bucket_uri(GCS_STATUS_PREFIX, filename)
+
+
+def _upload_status_file(local_path: Path, filename: str) -> None:
+    if not GCS_BUCKET:
+        return
+    if not local_path.exists():
+        return
+    _run_cmd(["storage", "cp", str(local_path), _status_uri(filename)])
 
 
 def _directory_upload_stats(local_dir: Path) -> dict[str, int]:
@@ -197,6 +210,10 @@ def _save_state(state: dict) -> None:
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     with open(STATE_FILE, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2, ensure_ascii=False)
+    try:
+        _upload_status_file(STATE_FILE, STATE_FILE.name)
+    except Exception as exc:
+        print(f"[CloudWorker] Failed to upload worker state mirror: {exc}")
 
 
 def _post_alert(payload: dict) -> None:
@@ -337,6 +354,10 @@ def _record_alert(
     ALERTS_FILE.parent.mkdir(parents=True, exist_ok=True)
     with open(ALERTS_FILE, "a", encoding="utf-8") as f:
         f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    try:
+        _upload_status_file(ALERTS_FILE, ALERTS_FILE.name)
+    except Exception as exc:
+        print(f"[CloudWorker] Failed to upload alert log mirror: {exc}")
     try:
         _post_alert(payload)
     except Exception as exc:

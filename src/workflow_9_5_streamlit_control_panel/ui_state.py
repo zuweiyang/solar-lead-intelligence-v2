@@ -9,6 +9,8 @@ from __future__ import annotations
 import csv
 import json
 import os
+import shutil
+import subprocess
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -42,6 +44,8 @@ from config.settings import (
     CLOUD_SEND_STATUS_FILE,
     CLOUD_WORKER_POLL_SECONDS,
     DATA_DIR,
+    GCS_BUCKET,
+    GCS_STATUS_PREFIX,
     REPLY_LOGS_FILE,
     RUNS_DIR,
 )
@@ -153,6 +157,66 @@ def _read_json(path: Path) -> dict:
         return data if isinstance(data, dict) else {}
     except Exception:
         return {}
+
+
+def _resolve_gcloud_bin() -> str:
+    for candidate in (
+        os.getenv("GCLOUD_BIN", "").strip(),
+        "gcloud.cmd",
+        "gcloud.exe",
+        "gcloud",
+    ):
+        if not candidate:
+            continue
+        resolved = shutil.which(candidate)
+        if resolved:
+            return resolved
+    return ""
+
+
+def _status_uri(filename: str) -> str:
+    bucket = str(GCS_BUCKET or "").strip()
+    prefix = str(GCS_STATUS_PREFIX or "ops").strip("/").replace("\\", "/")
+    if not bucket:
+        return ""
+    if prefix:
+        return f"gs://{bucket}/{prefix}/{filename}"
+    return f"gs://{bucket}/{filename}"
+
+
+def _read_json_from_gcs(filename: str) -> dict:
+    gcloud_bin = _resolve_gcloud_bin()
+    uri = _status_uri(filename)
+    if not gcloud_bin or not uri:
+        return {}
+    try:
+        result = subprocess.run(
+            [gcloud_bin, "storage", "cat", uri],
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+        data = json.loads(result.stdout)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _read_lines_from_gcs(filename: str) -> list[str]:
+    gcloud_bin = _resolve_gcloud_bin()
+    uri = _status_uri(filename)
+    if not gcloud_bin or not uri:
+        return []
+    try:
+        result = subprocess.run(
+            [gcloud_bin, "storage", "cat", uri],
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+        return [line for line in result.stdout.splitlines() if line.strip()]
+    except Exception:
+        return []
 
 
 def _load_run_config(run_dir: Path) -> dict:
@@ -589,7 +653,12 @@ def load_cloud_worker_health() -> dict:
     release_path = DATA_DIR / "deploy_release.json"
 
     worker_state = _read_json(state_path)
+    if not worker_state:
+        worker_state = _read_json_from_gcs("cloud_send_worker_state.json")
+
     release = _read_json(release_path)
+    if not release:
+        release = _read_json_from_gcs("deploy_release.json")
 
     now = datetime.now()
     last_poll = _parse_dt(worker_state.get("last_poll_at", ""))
@@ -613,28 +682,30 @@ def load_cloud_worker_health() -> dict:
     last_alert_message = ""
     twenty_four_hours_ago = now - timedelta(hours=24)
 
+    alert_lines: list[str] = []
     if alerts_path.exists():
         try:
             with open(alerts_path, encoding="utf-8") as f:
-                for line in f:
-                    text = line.strip()
-                    if not text:
-                        continue
-                    try:
-                        payload = json.loads(text)
-                    except Exception:
-                        continue
-                    ts = _parse_dt(payload.get("timestamp", ""))
-                    if ts and ts.replace(tzinfo=None) >= twenty_four_hours_ago:
-                        alerts_24h += 1
-                    if ts and (last_alert_dt is None or ts > last_alert_dt):
-                        last_alert_dt = ts
-                        last_alert_at = ts.strftime("%Y-%m-%d %H:%M")
-                        last_alert_level = str(payload.get("level") or "")
-                        last_alert_type = str(payload.get("event_type") or "")
-                        last_alert_message = str(payload.get("message") or "")
+                alert_lines = [line.strip() for line in f if line.strip()]
         except Exception:
-            pass
+            alert_lines = []
+    elif GCS_BUCKET:
+        alert_lines = _read_lines_from_gcs("cloud_worker_alerts.jsonl")
+
+    for text in alert_lines:
+        try:
+            payload = json.loads(text)
+        except Exception:
+            continue
+        ts = _parse_dt(payload.get("timestamp", ""))
+        if ts and ts.replace(tzinfo=None) >= twenty_four_hours_ago:
+            alerts_24h += 1
+        if ts and (last_alert_dt is None or ts > last_alert_dt):
+            last_alert_dt = ts
+            last_alert_at = ts.strftime("%Y-%m-%d %H:%M")
+            last_alert_level = str(payload.get("level") or "")
+            last_alert_type = str(payload.get("event_type") or "")
+            last_alert_message = str(payload.get("message") or "")
 
     return {
         "worker_health": health,
