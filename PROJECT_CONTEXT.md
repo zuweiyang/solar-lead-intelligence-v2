@@ -3409,3 +3409,39 @@ Remaining watch items are now operational, not architectural:
 - continue observing long-running queue convergence for `inflight/`
 - optionally add `inflight` timeout reclaim in a future hardening pass
 - keep worker alert email credentials and target address current
+
+### V2 post-closeout gap found: reply/bounce intake was not live-wired (2026-03-23)
+
+Operational review after V2 closeout found that the live VM was producing:
+
+- `data/crm/send_logs.csv`
+
+but not:
+
+- `data/crm/reply_logs.csv`
+- `data/crm/engagement_logs.csv`
+
+Meaning:
+
+- Workflow 7 send was live
+- but Workflow 7.8 reply intelligence was not being executed on the VM
+- therefore Gmail bounce messages visible in the inbox were not yet being
+  converted into suppression state automatically
+
+Hardening applied:
+
+- added `scripts/run_reply_intelligence.py`
+  - runs Workflow 7.8 reply intake
+  - then runs Workflow 7.5 engagement aggregation
+  - writes `data/reply_intelligence_status.json`
+- added systemd units:
+  - `reply-intelligence.service`
+  - `reply-intelligence.timer`
+- `deploy/gcp/update_vm.sh` now renders and installs all unit files under
+  `deploy/gcp/systemd/` and enables `reply-intelligence.timer`
+
+Result:
+
+- bounce / reply suppression is now designed to run independently from the main
+  cloud-send worker loop
+- this avoids coupling inbound-reply ingestion to send timing

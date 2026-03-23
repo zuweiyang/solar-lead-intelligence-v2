@@ -1,0 +1,13 @@
+[Unit]
+Description=Solar Lead Intelligence Reply Intelligence Sync
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=__PROJECT_ROOT__
+Environment=PYTHONUTF8=1
+Environment=PYTHONIOENCODING=utf-8
+EnvironmentFile=__PROJECT_ROOT__/.env
+ExecStartPre=/bin/bash __PROJECT_ROOT__/deploy/gcp/restore_gmail_oauth.sh --check-only
+ExecStart=__PROJECT_ROOT__/.venv/bin/python __PROJECT_ROOT__/scripts/run_reply_intelligence.py
+

@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Solar Lead Intelligence Reply Intelligence every 15 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=15min
+Persistent=true
+Unit=reply-intelligence.service
+
+[Install]
+WantedBy=timers.target

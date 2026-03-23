@@ -106,13 +106,15 @@ EOF
 
 echo "[update-vm] Wrote release metadata to $release_file"
 
-if [[ -f "$PROJECT_ROOT/deploy/gcp/systemd/cloud-send-worker.service" ]]; then
+if compgen -G "$PROJECT_ROOT/deploy/gcp/systemd/*" > /dev/null; then
   echo "[update-vm] Refreshing systemd unit"
-  rendered_unit="$(mktemp)"
-  sed "s|__PROJECT_ROOT__|$PROJECT_ROOT|g" \
-    "$PROJECT_ROOT/deploy/gcp/systemd/cloud-send-worker.service" > "$rendered_unit"
-  $SUDO cp "$rendered_unit" /etc/systemd/system/cloud-send-worker.service
-  rm -f "$rendered_unit"
+  for unit_template in "$PROJECT_ROOT"/deploy/gcp/systemd/*; do
+    [[ -f "$unit_template" ]] || continue
+    rendered_unit="$(mktemp)"
+    sed "s|__PROJECT_ROOT__|$PROJECT_ROOT|g" "$unit_template" > "$rendered_unit"
+    $SUDO cp "$rendered_unit" "/etc/systemd/system/$(basename "$unit_template")"
+    rm -f "$rendered_unit"
+  done
   $SUDO systemctl daemon-reload
 fi
 
@@ -120,6 +122,12 @@ if [[ "$RESTART_WORKER" == "true" ]] && $SUDO systemctl list-unit-files cloud-se
   echo "[update-vm] Restarting cloud-send-worker"
   $SUDO systemctl restart cloud-send-worker
   $SUDO systemctl --no-pager --full status cloud-send-worker || true
+fi
+
+if $SUDO systemctl list-unit-files reply-intelligence.timer >/dev/null 2>&1; then
+  echo "[update-vm] Enabling reply-intelligence.timer"
+  $SUDO systemctl enable --now reply-intelligence.timer
+  $SUDO systemctl --no-pager --full status reply-intelligence.timer || true
 fi
 
 echo "[update-vm] Done"
