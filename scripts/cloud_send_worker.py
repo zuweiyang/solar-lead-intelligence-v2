@@ -44,11 +44,14 @@ from config.settings import (
     RUNS_DIR,
 )
 from src.workflow_9_campaign_runner.campaign_state import (
+    CLOUD_DEPLOY_COMPLETED,
     CLOUD_SEND_COMPLETED,
     CLOUD_SEND_FAILED,
     CLOUD_SEND_SENDING,
     CLOUD_SEND_SYNCED,
     CLOUD_SEND_WAITING_WINDOW,
+    load_cloud_deploy_status,
+    sync_cloud_deploy_status,
     load_cloud_send_status,
     sync_cloud_send_status,
 )
@@ -359,6 +362,24 @@ def _ensure_run_synced(
     return target_dir, True
 
 
+def _ensure_deploy_status_completed(campaign_id: str, manifest_uri: str) -> None:
+    deploy_state = load_cloud_deploy_status(campaign_id)
+    status = str(deploy_state.get("cloud_deploy_status") or "").strip().lower()
+    if status == CLOUD_DEPLOY_COMPLETED:
+        return
+
+    run_uri = str(deploy_state.get("cloud_deploy_run_uri") or _bucket_uri(GCS_RUNS_PREFIX, campaign_id))
+    sync_cloud_deploy_status(
+        campaign_id,
+        CLOUD_DEPLOY_COMPLETED,
+        details={
+            "cloud_deploy_run_uri": run_uri,
+            "cloud_deploy_manifest_uri": manifest_uri,
+            "cloud_deploy_reconciled_at": _now_utc(),
+        },
+    )
+
+
 def _upload_run_outputs(campaign_id: str) -> dict[str, float | int]:
     run_dir = RUNS_DIR / campaign_id
     run_uri = _bucket_uri(GCS_RUNS_PREFIX, campaign_id)
@@ -584,6 +605,7 @@ def run_worker(poll_seconds: float = CLOUD_WORKER_POLL_SECONDS) -> None:
 
             try:
                 _, did_sync = _ensure_run_synced(campaign_id, manifest_uri, manifest, state)
+                _ensure_deploy_status_completed(campaign_id, manifest_uri)
                 if did_sync:
                     sync_cloud_send_status(
                         campaign_id,
