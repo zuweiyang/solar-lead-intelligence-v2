@@ -21,9 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
-import secrets
 from datetime import datetime, timezone
-from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -88,11 +86,9 @@ def _run_local_server(port: int) -> None:
 def _manual_start(redirect_uri: str) -> None:
     flow = _build_flow()
     flow.redirect_uri = redirect_uri
-    code_verifier = secrets.token_urlsafe(72)
     auth_url, state = flow.authorization_url(
         access_type="offline",
         prompt="consent",
-        code_verifier=code_verifier,
     )
 
     _save_pending_session(
@@ -100,7 +96,6 @@ def _manual_start(redirect_uri: str) -> None:
             "created_at": datetime.now(timezone.utc).isoformat(),
             "redirect_uri": redirect_uri,
             "state": state,
-            "code_verifier": code_verifier,
             "scopes": SCOPES,
         }
     )
@@ -121,7 +116,7 @@ def _manual_finish(code_or_url: str) -> None:
 
     flow = _build_flow()
     flow.redirect_uri = pending["redirect_uri"]
-    flow.fetch_token(code=code, code_verifier=pending["code_verifier"])
+    flow.fetch_token(code=code)
 
     with open(str(GMAIL_TOKEN_FILE), "w", encoding="utf-8") as f:
         f.write(flow.credentials.to_json())
