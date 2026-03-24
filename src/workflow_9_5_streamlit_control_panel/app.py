@@ -81,9 +81,15 @@ def main() -> None:
     st.divider()
 
     # ── Section 3 — KPI Dashboard ────────────────────────────────────────────
-    render_kpi_dashboard()
-
-    st.divider()
+    show_kpi_dashboard = st.toggle(
+        "Show KPI Dashboard",
+        value=False,
+        key="show_kpi_dashboard",
+        help="Hidden by default to keep the control panel faster. Turn this on only when you need KPI details.",
+    )
+    if show_kpi_dashboard:
+        render_kpi_dashboard()
+        st.divider()
 
     # ── Section 4 — Current Campaign State ───────────────────────────────────
     render_campaign_state_view()

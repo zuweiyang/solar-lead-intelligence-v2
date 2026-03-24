@@ -3784,3 +3784,12 @@ Related control-panel hardening:
     - `CLOUD_SEND_ENABLED` is off in the local environment
   - `ui_config.build_campaign_config()` now also forces `auto_cloud_deploy=False` when `CLOUD_SEND_ENABLED` is off, so stale widget state cannot leak an impossible `auto` setting into completed runs
   - result: operators no longer see the contradictory state where the UI says `auto` but the run later lands as `cloud_deploy_status=not_enabled`
+- 2026-03-25: Added low-risk Streamlit control-panel speedups for queue/deploy interactions.
+  - `ui_state._read_json_from_gcs()` now uses a short in-memory TTL cache (10s) so repeated reruns do not shell out to `gcloud storage cat` on every button click
+  - `ui_state._read_run_json_from_gcs()` now also uses a short TTL cache for per-run cloud status reads
+  - `ui_state._count_csv()` now uses fast line counting first, which avoids fully parsing CSV files just to show queue counts in `Ready To Deploy` / reconciliation views
+  - intent: reduce the long white-screen / frozen feeling when clicking `Start Runner`, selecting deploy rows, and re-rendering cloud reconciliation sections
+- 2026-03-25: KPI Dashboard is now hidden by default in the Streamlit control panel.
+  - `app.py` no longer renders `render_kpi_dashboard()` on every page load
+  - operators must explicitly enable **Show KPI Dashboard** to render KPI metrics
+  - intent: cut down unnecessary file reads and cloud-status reconciliation work during queue/deploy operations, since KPI was not critical for short-term operations
