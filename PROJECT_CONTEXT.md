@@ -3753,3 +3753,13 @@ Related control-panel hardening:
   - `search_tasks.json` confirmed the generated queries are now Portuguese (`energia solar`, `empresa de energia solar`, `instalador solar`, `energia fotovoltaica`, etc.)
   - `company_pages.json` confirmed crawled pages were strongly local-language (`lang="pt-BR"`, titles like `Instalação de Energia Solar em Salvador`)
   - this validation was intentionally dry-run and stopped at `crawl`, so it did not enter enrichment, email generation, or send
+- 2026-03-24: Extended the Brazil localization pack into Workflow 6 email generation so Brazil now defaults to Portuguese outreach without any UI change.
+  - `src/workflow_6_email_generation/email_templates.py` now generates Portuguese rule-based subjects, greetings, opening lines, CTAs, and sign-off for `country=Brazil`
+  - `src/workflow_6_email_generation/email_generator.py` now localizes greetings and injects a country-aware output-language instruction into the OpenRouter prompt, so AI-generated Brazil drafts are requested in `Brazilian Portuguese`
+  - added regression coverage in `tests/test_brazil_market_localization.py` for:
+    - Brazil default email language = `pt-BR`
+    - Brazil rule-based drafts use Portuguese subject/body/sign-off
+    - Brazil prompt localization requests `Brazilian Portuguese`
+  - scope intentionally kept country-driven: UI remains unchanged; selecting Brazil is the trigger for Portuguese defaults
+  - status note: this Workflow 6 email-language layer is implemented in the local workspace, but has not yet been pushed to GitHub or deployed to the VM in this pass
+  - local verification note: no runnable local Python interpreter / virtualenv was available in the current shell, so this pass was verified by code inspection rather than executing pytest locally

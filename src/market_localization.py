@@ -110,6 +110,9 @@ BRAZIL_GENERIC_MAILBOX_LOCAL_PARTS: tuple[str, ...] = (
     "financeiro",
 )
 
+DEFAULT_EMAIL_LANGUAGE = "en"
+BRAZIL_EMAIL_LANGUAGE = "pt-BR"
+
 
 def _country_key(country: str) -> str:
     return (country or "").strip().lower()
@@ -150,3 +153,15 @@ def get_generic_mailbox_local_parts(country: str = "") -> tuple[str, ...]:
     if _country_key(country) == "brazil":
         return tuple(_merge_unique(DEFAULT_GENERIC_MAILBOX_LOCAL_PARTS, BRAZIL_GENERIC_MAILBOX_LOCAL_PARTS))
     return DEFAULT_GENERIC_MAILBOX_LOCAL_PARTS
+
+
+def get_email_language(country: str = "") -> str:
+    if _country_key(country) == "brazil":
+        return BRAZIL_EMAIL_LANGUAGE
+    return DEFAULT_EMAIL_LANGUAGE
+
+
+def get_email_language_name(country: str = "") -> str:
+    if get_email_language(country) == BRAZIL_EMAIL_LANGUAGE:
+        return "Brazilian Portuguese"
+    return "English"

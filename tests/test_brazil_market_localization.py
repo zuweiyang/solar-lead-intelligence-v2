@@ -1,10 +1,13 @@
 from src.market_localization import (
     BRAZIL_SEARCH_KEYWORDS,
+    get_email_language,
     get_crawl_target_paths,
     get_generic_guess_local_parts,
     get_generic_mailbox_local_parts,
     get_search_keywords,
 )
+from src.workflow_6_email_generation.email_generator import _greeting, _prompt_localization
+from src.workflow_6_email_generation.email_templates import build_rule_based_email
 from src.workflow_5_5_lead_enrichment.enricher import _guess_email
 from src.workflow_5_9_email_verification.email_verifier import is_generic_mailbox
 from src.workflow_9_campaign_runner.campaign_config import CampaignConfig, get_effective_keywords
@@ -40,3 +43,34 @@ def test_brazil_generic_mailboxes_are_detected() -> None:
     assert "vendas" in prefixes
     assert is_generic_mailbox("contato@empresa.com.br")
     assert is_generic_mailbox("vendas@empresa.com.br")
+
+
+def test_brazil_email_language_defaults_to_portuguese() -> None:
+    assert get_email_language("Brazil") == "pt-BR"
+
+
+def test_brazil_rule_based_email_is_portuguese() -> None:
+    record = {
+        "country": "Brazil",
+        "company_name": "Impla Solar",
+        "kp_name": "",
+        "lead_score": 65,
+        "email_angle": "installation",
+        "market_focus": "commercial",
+    }
+    draft = build_rule_based_email(record)
+    assert "Pergunta rápida" in draft["subject"]
+    assert "Olá equipe da Impla Solar" in draft["body"]
+    assert "Atenciosamente," in draft["body"]
+    assert "Quick question" not in draft["subject"]
+    assert "Hello Impla Solar team," not in draft["body"]
+
+
+def test_brazil_email_prompt_requests_portuguese_output() -> None:
+    record = {
+        "country": "Brazil",
+        "company_name": "Marsol Energia Solar",
+    }
+    prompt_loc = _prompt_localization(record)
+    assert prompt_loc["preferred_language"] == "Brazilian Portuguese"
+    assert _greeting(record).startswith("Olá equipe da")

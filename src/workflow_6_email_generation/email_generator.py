@@ -16,6 +16,7 @@ from config.settings import (
     SENDER_NAME,
     SENDER_TITLE,
 )
+from src.market_localization import get_email_language, get_email_language_name
 from src.workflow_6_email_generation.email_merge import merge_leads
 from src.workflow_6_email_generation.email_templates import build_rule_based_email
 from src.workflow_6_2_signal_personalization.signal_fact_extractor import (
@@ -58,12 +59,13 @@ def _display_name(company_name: str) -> str:
 
 def _greeting(record: dict) -> str:
     name = (record.get("kp_name") or "").strip()
+    is_pt = get_email_language(record.get("country", "")) == "pt-BR"
     if name:
         first = name.split()[0]
-        return f"Hi {first},"
+        return f"Olá {first}," if is_pt else f"Hi {first},"
     company = _display_name(record.get("company_name") or "")
     short = " ".join(company.split()[:3]) if company else "team"
-    return f"Hello {short} team,"
+    return f"Olá equipe da {short}," if is_pt else f"Hello {short} team,"
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +102,9 @@ Your goal is to open a conversation with a target company that installs, develop
 or integrates solar and/or battery storage systems.
 
 Rules:
+- Write the entire subject and body in {preferred_language}.
+- Use natural {preferred_language} for business email.
+- Do not mix languages in the final output.
 - Keep the email under 120 words total (including greeting and sign-off).
 - Never pretend to be the recipient's company.
 - Never say "At {company_name} we..." — you are the sender, not the recipient.
@@ -149,14 +154,14 @@ Return ONLY valid JSON, no markdown fences:
 
 Subject line rules:
 - Natural and specific, 5-8 words
-- Prefer short, plain-English subjects over polished marketing phrasing
+- Prefer short, plain-{subject_style_language} subjects over polished marketing phrasing
 - Tailor to email_angle:
-  - project_delivery: "Quick question on your EPC projects", "Mounting supply for upcoming projects"
-  - installation: "Quick question on your installs", "Mounting supply for your installs"
-  - storage_integration: "Quick question on storage projects", "Storage hardware for solar work"
-  - distributor_supply: "Quick question for the {company_name} team", "Mounting supply for your customers"
-  - cautious_outreach: "Quick question about your solar work", "Solar hardware question"
-- Avoid generic subjects like "Solar solutions" or "Energy solutions"
+  - project_delivery: {project_delivery_examples}
+  - installation: {installation_examples}
+  - storage_integration: {storage_examples}
+  - distributor_supply: {distributor_examples}
+  - cautious_outreach: {cautious_examples}
+- Avoid generic subjects like {generic_subject_examples}
 """
 
 _USER = """\
@@ -174,8 +179,34 @@ Sender title: {sender_title}
 
 Greeting to use: {greeting}
 
+Preferred output language: {preferred_language}
+
 Opening sentence instruction: {opening_instruction}
 """
+
+
+def _prompt_localization(record: dict) -> dict[str, str]:
+    if get_email_language(record.get("country", "")) == "pt-BR":
+        return {
+            "preferred_language": get_email_language_name(record.get("country", "")),
+            "subject_style_language": "Portuguese",
+            "project_delivery_examples": '"Pergunta rápida sobre seus projetos EPC", "Fornecimento de estruturas para projetos em andamento"',
+            "installation_examples": '"Pergunta rápida sobre suas instalações", "Fornecimento de estruturas para suas instalações"',
+            "storage_examples": '"Pergunta rápida sobre projetos com armazenamento", "Hardware para projetos solares com armazenamento"',
+            "distributor_examples": '"Pergunta rápida para a equipe da empresa", "Fornecimento de estruturas para seus clientes"',
+            "cautious_examples": '"Pergunta rápida sobre seu trabalho em energia solar", "Pergunta sobre hardware solar"',
+            "generic_subject_examples": '"soluções solares" or "soluções de energia"',
+        }
+    return {
+        "preferred_language": "English",
+        "subject_style_language": "English",
+        "project_delivery_examples": '"Quick question on your EPC projects", "Mounting supply for upcoming projects"',
+        "installation_examples": '"Quick question on your installs", "Mounting supply for your installs"',
+        "storage_examples": '"Quick question on storage projects", "Storage hardware for solar work"',
+        "distributor_examples": '"Quick question for the company team", "Mounting supply for your customers"',
+        "cautious_examples": '"Quick question about your solar work", "Solar hardware question"',
+        "generic_subject_examples": '"Solar solutions" or "Energy solutions"',
+    }
 
 
 # Use shared robust JSON parser (handles empty, Extra data, control chars, fences)
@@ -191,6 +222,7 @@ def _call_openrouter(record: dict) -> dict:
     opening_line = (record.get("opening_line") or "").strip()
     best_signal  = (record.get("best_signal")  or "").strip()
     send_tier    = (record.get("send_tier")    or "").strip()
+    prompt_loc   = _prompt_localization(record)
 
     # Tier C: skip specific personalization entirely — it would be built on weak signals.
     # Write a short, cautious, generic opener instead.
@@ -273,6 +305,7 @@ def _call_openrouter(record: dict) -> dict:
         sender_name          = SENDER_NAME or "Your Name",
         sender_title         = SENDER_TITLE or "",
         greeting             = greeting,
+        preferred_language   = prompt_loc["preferred_language"],
         opening_instruction  = opening_instruction,
     )
 
@@ -285,7 +318,7 @@ def _call_openrouter(record: dict) -> dict:
         json={
             "model": EMAIL_GEN_MODEL,
             "messages": [
-                {"role": "system", "content": _SYSTEM},
+                {"role": "system", "content": _SYSTEM.format(**prompt_loc)},
                 {"role": "user",   "content": user_msg},
             ],
             "max_tokens": 400,
