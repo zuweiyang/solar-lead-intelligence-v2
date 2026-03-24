@@ -25,7 +25,9 @@ from src.market_localization import get_generic_mailbox_local_parts
 # ---------------------------------------------------------------------------
 
 _GENERIC_PREFIXES: frozenset[str] = frozenset(
-    tuple(get_generic_mailbox_local_parts()) + (
+    tuple(get_generic_mailbox_local_parts())
+    + tuple(get_generic_mailbox_local_parts("Brazil"))
+    + (
         "procurement",
         "purchasing",
     )
