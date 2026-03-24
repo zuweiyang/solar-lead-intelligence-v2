@@ -3763,3 +3763,24 @@ Related control-panel hardening:
   - scope intentionally kept country-driven: UI remains unchanged; selecting Brazil is the trigger for Portuguese defaults
   - status note: this Workflow 6 email-language layer is implemented in the local workspace, but has not yet been pushed to GitHub or deployed to the VM in this pass
   - local verification note: no runnable local Python interpreter / virtualenv was available in the current shell, so this pass was verified by code inspection rather than executing pytest locally
+- 2026-03-24: Pushed and deployed the Brazil email-generation localization to GitHub / VM.
+  - GitHub commits:
+    - `a1f01d2` — `Localize Brazil email generation to Portuguese`
+    - `35af9bb` — `Recognize Brazil generic mailbox prefixes`
+  - VM updated via `bash deploy/gcp/update_vm.sh`, and `cloud-send-worker` was restarted successfully
+  - VM regression result:
+    - `./.venv/bin/pytest tests/test_brazil_market_localization.py -q`
+    - result: `7 passed`
+  - VM sample generation result confirmed the deployed Brazil output is Portuguese:
+    - subject: `Pergunta rápida sobre suas instalações`
+    - body opened with `Olá equipe da Marsol Energia Solar,`
+    - prompt localization resolved to `Brazilian Portuguese`
+  - note: a full Workflow 9 Brazil dry-run on the VM was not usable for this verification because `GOOGLE_MAPS_API_KEY` was not available in that shell context, so the final runtime check was done directly against Workflow 6 on the VM
+- 2026-03-25: Resolved the Workflow 9 auto-cloud-handoff configuration conflict.
+  - decision: keep `CLOUD_SEND_ENABLED` as the global capability gate; do **not** let a per-run `auto_cloud_deploy=true` bypass it
+  - `campaign_runner._should_auto_deploy()` continues to require `CLOUD_SEND_ENABLED=true`
+  - `ui_views.py` now disables **Auto Upload To Cloud After Completion** whenever:
+    - `send_mode == dry_run`, or
+    - `CLOUD_SEND_ENABLED` is off in the local environment
+  - `ui_config.build_campaign_config()` now also forces `auto_cloud_deploy=False` when `CLOUD_SEND_ENABLED` is off, so stale widget state cannot leak an impossible `auto` setting into completed runs
+  - result: operators no longer see the contradictory state where the UI says `auto` but the run later lands as `cloud_deploy_status=not_enabled`

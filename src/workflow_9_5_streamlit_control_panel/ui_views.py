@@ -75,6 +75,7 @@ from src.workflow_9_5_streamlit_control_panel.ui_actions import (
 )
 from src.workflow_9_campaign_runner.campaign_config import PIPELINE_STEPS
 from src.workflow_9_campaign_runner.campaign_runner import is_campaign_running
+from config.settings import CLOUD_SEND_ENABLED
 
 
 # ---------------------------------------------------------------------------
@@ -210,10 +211,11 @@ def render_campaign_form() -> dict:
         )
 
     auto_cloud_deploy_default = bool(UI_DEFAULTS.get("auto_cloud_deploy", False))
+    auto_cloud_deploy_available = send_mode != "dry_run" and CLOUD_SEND_ENABLED
     auto_cloud_deploy = st.checkbox(
         "Auto Upload To Cloud After Completion",
-        value=False if send_mode == "dry_run" else auto_cloud_deploy_default,
-        disabled=send_mode == "dry_run",
+        value=auto_cloud_deploy_default if auto_cloud_deploy_available else False,
+        disabled=not auto_cloud_deploy_available,
         help=(
             "When enabled, a live-send campaign that reaches `campaign_status` with a non-empty "
             "`final_send_queue.csv` will auto-handoff to cloud send. Disable this to keep the run local "
@@ -222,6 +224,11 @@ def render_campaign_form() -> dict:
     )
     if send_mode == "dry_run":
         st.caption("Cloud auto-upload is disabled in `dry_run` mode.")
+    elif not CLOUD_SEND_ENABLED:
+        st.caption(
+            "Cloud auto-upload is disabled because `CLOUD_SEND_ENABLED` is off in the local environment. "
+            "Completed runs will stay local until manually deployed from Ready To Deploy."
+        )
 
     # ---- Location -----------------------------------------------------------
     st.subheader("Location")
@@ -2037,6 +2044,23 @@ def _render_queue_panel_content() -> None:
              failed=summary.get("failed"),
              total=summary.get("total"))
 
+    summary_snapshot = (
+        int(summary.get("running") or 0),
+        int(summary.get("pending") or 0),
+        int(summary.get("completed") or 0),
+        int(summary.get("failed") or 0),
+        int(summary.get("total") or 0),
+        str((summary.get("running_job") or {}).get("job_id") or ""),
+        str((summary.get("next_job") or {}).get("job_id") or ""),
+    )
+    previous_snapshot = tuple(st.session_state.get("_queue_summary_snapshot", ()))
+    st.session_state["_queue_summary_snapshot"] = summary_snapshot
+    if previous_snapshot and previous_snapshot != summary_snapshot:
+        # Queue state changed under fragment refresh (for example a job moved
+        # from pending -> completed). Trigger one full rerun so the rest of the
+        # dashboard, including Ready To Deploy, can catch up.
+        st.rerun()
+
     # ---- Auto-stop: kill the scheduler when all jobs are finished -----------
     # The scheduler loops indefinitely after the queue empties, so pid_alive
     # would stay True forever.  When there are no pending or running jobs but
@@ -2084,8 +2108,34 @@ def _render_queue_panel_content() -> None:
     with btn_col:
         # Don't allow Start while a job is actively running (lock present)
         job_running = sched["state"] == "active" and is_campaign_running()
+        queue_paused = sched["state"] == "paused"
 
-        if pid_alive:
+        if queue_paused:
+            if pid_alive:
+                if st.button("Resume Queue", type="primary", width="stretch", key="sched_resume_primary"):
+                    log.action("Primary Resume Queue clicked")
+                    resume_queue()
+                    st.toast("Queue resumed.")
+                    st.rerun()
+            else:
+                if st.button(
+                    "Resume Queue & Start Runner",
+                    type="primary",
+                    width="stretch",
+                    key="sched_resume_and_start",
+                    disabled=job_running,
+                ):
+                    log.action("Primary Resume Queue & Start Runner clicked")
+                    resume_queue()
+                    ok, msg = _start_scheduler_process()
+                    log.action("Resume+Start result", ok=ok, detail=msg)
+                    if ok:
+                        st.toast(msg)
+                    else:
+                        st.error(msg)
+                    st.rerun()
+
+        elif pid_alive:
             if st.button("■ Stop Runner", width="stretch", key="sched_stop"):
                 log.action("■ Stop Runner clicked")
                 msg = _stop_scheduler_process()
@@ -2169,7 +2219,7 @@ def _render_queue_panel_content() -> None:
         paused = is_queue_paused()
         if paused:
             st.warning("Queue is PAUSED")
-            if st.button("Resume Queue", key="queue_resume"):
+            if st.button("Resume Queue", key="queue_resume_secondary"):
                 log.action("Resume Queue clicked")
                 resume_queue()
                 st.rerun()

@@ -11,6 +11,7 @@ import json
 import os
 import shutil
 import subprocess
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -52,6 +53,12 @@ from config.settings import (
 )
 from src.workflow_9_campaign_runner.campaign_state import load_cloud_deploy_status
 from src.workflow_9_campaign_runner.campaign_state import load_cloud_send_status
+
+
+_GCS_JSON_CACHE_TTL_SECONDS = 10
+_GCS_RUN_JSON_CACHE_TTL_SECONDS = 10
+_gcs_json_cache: dict[str, tuple[float, dict]] = {}
+_gcs_run_json_cache: dict[tuple[str, str], tuple[float, dict]] = {}
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -103,8 +110,15 @@ def _read_csv(path: Path) -> list[dict]:
 
 
 def _count_csv(path: Path) -> int:
-    rows = _read_csv(path)
-    return len(rows)
+    if not path.exists():
+        return 0
+    try:
+        with open(path, "r", encoding="utf-8", newline="") as f:
+            line_count = sum(1 for _ in f)
+        return max(line_count - 1, 0)
+    except Exception:
+        rows = _read_csv(path)
+        return len(rows)
 
 
 def _count_csv_where(path: Path, col: str, value: str) -> int:
@@ -186,6 +200,11 @@ def _status_uri(filename: str) -> str:
 
 
 def _read_json_from_gcs(filename: str) -> dict:
+    now = time.time()
+    cached = _gcs_json_cache.get(filename)
+    if cached and now - cached[0] < _GCS_JSON_CACHE_TTL_SECONDS:
+        return dict(cached[1])
+
     gcloud_bin = _resolve_gcloud_bin()
     uri = _status_uri(filename)
     if not gcloud_bin or not uri:
@@ -198,7 +217,9 @@ def _read_json_from_gcs(filename: str) -> dict:
             capture_output=True,
         )
         data = json.loads(result.stdout)
-        return data if isinstance(data, dict) else {}
+        parsed = data if isinstance(data, dict) else {}
+        _gcs_json_cache[filename] = (now, parsed)
+        return dict(parsed)
     except Exception:
         return {}
 
@@ -231,6 +252,12 @@ def _runs_uri(*parts: str) -> str:
 
 
 def _read_run_json_from_gcs(campaign_id: str, filename: str) -> dict:
+    cache_key = (campaign_id, filename)
+    now = time.time()
+    cached = _gcs_run_json_cache.get(cache_key)
+    if cached and now - cached[0] < _GCS_RUN_JSON_CACHE_TTL_SECONDS:
+        return dict(cached[1])
+
     gcloud_bin = _resolve_gcloud_bin()
     uri = _runs_uri(campaign_id, filename)
     if not gcloud_bin or not uri:
@@ -243,7 +270,9 @@ def _read_run_json_from_gcs(campaign_id: str, filename: str) -> dict:
             capture_output=True,
         )
         data = json.loads(result.stdout)
-        return data if isinstance(data, dict) else {}
+        parsed = data if isinstance(data, dict) else {}
+        _gcs_run_json_cache[cache_key] = (now, parsed)
+        return dict(parsed)
     except Exception:
         return {}
 

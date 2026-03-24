@@ -68,7 +68,10 @@ _STALE_LOCK_THRESHOLD = timedelta(hours=2)
 
 
 def _should_auto_deploy(config: CampaignConfig, completed_steps: list[str]) -> bool:
-    if not CLOUD_SEND_ENABLED or not CLOUD_AUTO_DEPLOY_ON_COMPLETE:
+    if not CLOUD_SEND_ENABLED:
+        return False
+    auto_enabled = CLOUD_AUTO_DEPLOY_ON_COMPLETE if config.auto_cloud_deploy is None else bool(config.auto_cloud_deploy)
+    if not auto_enabled:
         return False
     if config.send_mode == "dry_run" or config.dry_run:
         return False
@@ -386,6 +389,7 @@ def resume_campaign() -> dict:
         crawl_limit       = saved_cfg.get("crawl_limit",      0),
         enrich_limit      = saved_cfg.get("enrich_limit",     0),
         send_mode         = saved_cfg.get("send_mode",        "dry_run"),
+        auto_cloud_deploy = saved_cfg.get("auto_cloud_deploy"),
         run_until         = saved_cfg.get("run_until",        "campaign_status"),
         resume            = True,
         dry_run           = saved_cfg.get("dry_run",          True),

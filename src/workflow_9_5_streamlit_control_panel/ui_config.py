@@ -19,6 +19,7 @@ from src.workflow_9_campaign_runner.campaign_config import (
     validate_config,
     _dedup_ordered,
 )
+from config.settings import CLOUD_AUTO_DEPLOY_ON_COMPLETE, CLOUD_SEND_ENABLED
 
 # ---------------------------------------------------------------------------
 # Form defaults shown in the Streamlit UI
@@ -37,6 +38,7 @@ UI_DEFAULTS = {
     "crawl_limit":      20,
     "enrich_limit":     20,
     "send_mode":        "dry_run",
+    "auto_cloud_deploy": CLOUD_AUTO_DEPLOY_ON_COMPLETE,
     "run_until":        "campaign_status",
     "dry_run":          True,
 }
@@ -103,6 +105,9 @@ def build_campaign_config(form_values: dict) -> tuple[CampaignConfig | None, lis
         crawl_limit      = int(form_values.get("crawl_limit")   or 0),
         enrich_limit     = int(form_values.get("enrich_limit")  or 0),
         send_mode        = form_values.get("send_mode", "dry_run"),
+        auto_cloud_deploy = False if (
+            form_values.get("send_mode", "dry_run") == "dry_run" or not CLOUD_SEND_ENABLED
+        ) else bool(form_values.get("auto_cloud_deploy", UI_DEFAULTS["auto_cloud_deploy"])),
         run_until        = form_values.get("run_until", "campaign_status"),
         resume           = False,
         dry_run          = bool(form_values.get("dry_run", True)),
