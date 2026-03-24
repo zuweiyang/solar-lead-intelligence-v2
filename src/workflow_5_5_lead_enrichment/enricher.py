@@ -28,6 +28,10 @@ from config.settings import (
     HUNTER_API_KEY,
 )
 from config.run_paths import RunPaths
+from src.market_localization import (
+    get_generic_guess_local_parts,
+    get_generic_mailbox_local_parts,
+)
 
 REQUEST_TIMEOUT  = 10
 RATE_LIMIT_DELAY = 1.5   # seconds between Apollo calls
@@ -200,17 +204,7 @@ def _title_is_buyer_persona(title: str) -> bool:
     return any(fragment in lower for fragment in _BUYER_PERSONA_FRAGMENTS)
 
 # Local-parts that identify generic/alias mailboxes (not personal contacts).
-_GENERIC_LOCAL_PARTS: frozenset[str] = frozenset({
-    "info", "contact", "contacts", "hello", "hi",
-    "enquiries", "enquiry", "enquire", "inquiry", "inquiries",
-    "sales", "admin", "administration", "office",
-    "general", "mail", "email", "webmaster",
-    "support", "help", "service", "services",
-    "team", "company", "business", "noreply", "no-reply",
-    "accounts", "billing", "reception",
-    "marketing", "news", "newsletter", "media",
-    "hr", "jobs", "careers", "recruitment",
-})
+_GENERIC_LOCAL_PARTS: frozenset[str] = frozenset(get_generic_mailbox_local_parts())
 
 
 def _is_generic_mailbox(email: str) -> bool:
@@ -727,14 +721,15 @@ def _contact_labels(kp_email: str, site_phone: str, website: str) -> dict:
     }
 
 
-def _guess_email(domain: str, index: int = 0) -> dict:
+def _guess_email(domain: str, index: int = 0, country: str = "") -> dict:
     """
     Build the most likely contact email for a domain using common patterns.
     Uses generic role addresses (info@, sales@) as reliable fallbacks.
     Tagged as 'guessed' — should be verified before sending.
     """
     # Role-based addresses are the most reliable guesses
-    role = ["info", "sales", "contact"][index % 3]
+    guess_locals = get_generic_guess_local_parts(country)
+    role = guess_locals[index % len(guess_locals)]
     return {
         "kp_name":  "",
         "kp_title": _GENERIC_KP_TITLES[index % len(_GENERIC_KP_TITLES)],
@@ -888,7 +883,7 @@ def enrich_lead_multi(lead: dict, index: int = 0, max_contacts: int = 3) -> list
             seen = {c[0]["kp_email"] for c in contacts}
             added = 0
             for i in range(remaining):
-                kp = _guess_email(domain, i)
+                kp = _guess_email(domain, i, lead.get("country", ""))
                 if kp["kp_email"] not in seen:
                     contacts.append((kp, "guessed"))
                     seen.add(kp["kp_email"])
@@ -966,7 +961,7 @@ def enrich_lead(lead: dict, index: int = 0) -> dict:
     if domain in _GUESS_DOMAIN_BLOCKLIST:
         print(f"[Workflow 5.5]   Skipping guess — blocked redirect domain: {domain}")
         return result
-    kp = _guess_email(domain, index)
+    kp = _guess_email(domain, index, lead.get("country", ""))
     return {**result, **kp, "enrichment_source": "guessed"}
 
 

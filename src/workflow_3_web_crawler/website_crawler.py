@@ -10,12 +10,11 @@ import requests
 import tldextract
 
 from config.settings import RAW_LEADS_FILE, COMPANY_PAGES_FILE, CRAWL_DELAY_SECONDS
+from src.market_localization import get_crawl_target_paths
 
 MAX_PAGES_PER_SITE = 5
 REQUEST_TIMEOUT    = 10
 TEST_LIMIT         = 50   # max leads crawled during smoke tests
-
-TARGET_PATHS = ["/about", "/about-us", "/services", "/projects", "/products"]
 
 HEADERS = {
     "User-Agent": (
@@ -60,7 +59,7 @@ def _fetch(url: str) -> str | None:
 # Core crawl logic
 # ---------------------------------------------------------------------------
 
-def crawl_site(base_url: str) -> dict[str, str]:
+def crawl_site(base_url: str, country: str = "") -> dict[str, str]:
     """
     Crawl homepage + up to TARGET_PATHS for one site.
     Returns dict of {label: html}, e.g. {"home": "...", "about": "..."}.
@@ -68,13 +67,14 @@ def crawl_site(base_url: str) -> dict[str, str]:
     """
     base_url = _ensure_https(base_url)
     pages: dict[str, str] = {}
+    target_paths = get_crawl_target_paths(country)
 
     # Always crawl home first
     html = _fetch(base_url)
     if html:
         pages["home"] = html
 
-    for path in TARGET_PATHS:
+    for path in target_paths:
         if len(pages) >= MAX_PAGES_PER_SITE:
             break
         label = path.strip("/").replace("-", "_") or "home"
@@ -181,9 +181,10 @@ def run(limit: int = 0) -> list[dict]:
     for lead in candidates:
         place_id = lead.get("place_id", "")
         website  = lead["website"].strip()
+        country  = lead.get("country", "")
 
         print(f"[Workflow 3] Crawling: {website}")
-        pages = crawl_site(website)
+        pages = crawl_site(website, country=country)
 
         if not pages:
             # Keep a stub entry so the company still reaches the classify step.

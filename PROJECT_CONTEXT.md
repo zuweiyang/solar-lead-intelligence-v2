@@ -3711,6 +3711,29 @@ Related control-panel hardening:
   - without the retry, clicking **Start Runner** could appear to do nothing
     because the scheduler process started, hit the queue-file race while moving
     the first job to `running`, then exited immediately
+- Queue -> Ready To Deploy sync fix:
+  - `render_queue_panel()` already used a Streamlit fragment for live queue
+    refresh, but `Ready To Deploy` lived outside that fragment in the normal
+    dashboard render path
+  - consequence: queue counts could update to `completed` while the deploy table
+    still showed stale rows until the operator manually refreshed the whole page
+  - `_render_queue_panel_content()` now snapshots the queue summary
+    (`running/pending/completed/failed/total` plus current/next job ids) and
+    triggers a full `st.rerun()` only when that snapshot changes
+  - effect: when a multi-run job completes, the rest of the dashboard catches
+    up automatically and newly completed campaigns appear in **Ready To Deploy**
+    without requiring a manual page refresh
+- Paused-queue resume UX hardening:
+  - when the queue pause flag existed, operators still had to reason about two
+    independent controls: whether the detached runner PID was alive and whether
+    the queue itself was paused
+  - the queue panel primary action now adapts to paused state:
+    - paused + runner alive     -> `Resume Queue`
+    - paused + runner stopped   -> `Resume Queue & Start Runner`
+    - not paused + runner alive -> `Stop Runner`
+    - not paused + runner dead  -> `Start Runner`
+  - effect: after pausing and refreshing the page, operators can continue with
+    one obvious primary action instead of getting stuck between Start and Resume
 - Cloud-send suppress-window investigation (Brazil):
   - Investigated why `sao-paulo_20260324_063452_3b0e` reached the cloud send
     window but still ended with `sent=0, deferred=2`
@@ -3724,3 +3747,9 @@ Related control-panel hardening:
   - Added regression test `tests/test_send_guard_domains.py` so distinct
     `.com.br` companies no longer suppress each other as if they were the same
     domain
+- 2026-03-24: Added a first-pass Brazil language pack. Default Brazil runs now use Portuguese solar search keywords instead of the global English defaults; the active crawler prioritizes Brazil contact-page paths like `/contato`, `/fale-conosco`, and `/orcamento`; and Brazil guessed/generic mailbox handling now recognizes and prioritizes prefixes such as `contato`, `comercial`, `vendas`, `atendimento`, `orcamento`, and `suporte`. This touched `src/market_localization.py`, `campaign_config.py`, `keyword_generator.py`, `workflow_3_web_crawler/website_crawler.py`, `workflow_5_5_lead_enrichment/enricher.py`, `workflow_5_9_email_verification/email_verifier.py`, `workflow_6_email_generation/email_merge.py`, plus new regression tests in `tests/test_brazil_market_localization.py`.
+- 2026-03-24: Ran a lightweight Brazil validation campaign locally for `Salvador, Bahia, Brazil` with `run_until=crawl` and small limits (`company_limit=5`, `crawl_limit=5`, `enrich_limit=5`) to verify the new localization before release.
+  - campaign_id: `salvador_20260324_230957_f7a7`
+  - `search_tasks.json` confirmed the generated queries are now Portuguese (`energia solar`, `empresa de energia solar`, `instalador solar`, `energia fotovoltaica`, etc.)
+  - `company_pages.json` confirmed crawled pages were strongly local-language (`lang="pt-BR"`, titles like `Instalação de Energia Solar em Salvador`)
+  - this validation was intentionally dry-run and stopped at `crawl`, so it did not enter enrichment, email generation, or send

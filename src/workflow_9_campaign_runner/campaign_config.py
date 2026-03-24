@@ -8,17 +8,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import List
 
+from src.market_localization import DEFAULT_SEARCH_KEYWORDS, get_search_keywords
+
 # Default keyword set mirrors Workflow 1 / keyword_generator.py
-DEFAULT_KEYWORDS: list[str] = [
-    "solar installer",
-    "solar contractor",
-    "commercial solar installer",
-    "solar developer",
-    "solar energy company",
-    "solar EPC",
-    "energy storage integrator",
-    "BESS integrator",
-]
+DEFAULT_KEYWORDS: list[str] = list(DEFAULT_SEARCH_KEYWORDS)
 
 # Ordered list of valid step names — also defines execution order
 PIPELINE_STEPS: list[str] = [
@@ -74,6 +67,7 @@ class CampaignConfig:
 
     # Send settings
     send_mode: str = "dry_run"        # "dry_run" | "smtp" | "gmail_api"
+    auto_cloud_deploy: bool | None = None  # None = inherit global default
 
     # Execution control
     run_until: str = "campaign_status"   # step name to stop after
@@ -96,7 +90,7 @@ def get_effective_keywords(config: CampaignConfig) -> list[str]:
     """Return the keyword list to use, based on keyword_mode."""
     if config.keyword_mode == "custom" and config.keywords:
         return list(config.keywords)
-    return DEFAULT_KEYWORDS
+    return get_search_keywords(config.country)
 
 
 def get_effective_location(config: CampaignConfig) -> str:

@@ -1,17 +1,9 @@
 # Workflow 1: Lead Generation
 # Generates industry keywords and geographic locations for search tasks.
 
-SOLAR_KEYWORDS = [
-    "solar installer",
-    "solar EPC",
-    "solar contractor",
-    "solar developer",
-    "solar energy company",
-    "solar panel installer",
-    "commercial solar installer",
-    "energy storage integrator",
-    "BESS integrator",
-]
+from src.market_localization import DEFAULT_SEARCH_KEYWORDS, get_search_keywords
+
+SOLAR_KEYWORDS = list(DEFAULT_SEARCH_KEYWORDS)
 
 US_STATES = [
     "California", "Texas", "Florida", "Arizona", "Nevada",
@@ -25,9 +17,9 @@ CANADIAN_PROVINCES = [
 ]
 
 
-def generate_keywords() -> list[str]:
+def generate_keywords(country: str = "") -> list[str]:
     """Return the list of solar industry search keywords."""
-    return SOLAR_KEYWORDS
+    return get_search_keywords(country)
 
 
 def generate_locations() -> list[str]:

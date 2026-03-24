@@ -17,24 +17,19 @@ from src.workflow_5_9_email_verification.verification_provider import (
     AbstractVerificationProvider,
     RawVerificationResponse,
 )
+from src.market_localization import get_generic_mailbox_local_parts
 
 
 # ---------------------------------------------------------------------------
 # Generic mailbox (role-address) prefixes
 # ---------------------------------------------------------------------------
 
-_GENERIC_PREFIXES: frozenset[str] = frozenset({
-    "info",
-    "sales",
-    "contact",
-    "office",
-    "admin",
-    "hello",
-    "support",
-    "service",
-    "procurement",
-    "purchasing",
-})
+_GENERIC_PREFIXES: frozenset[str] = frozenset(
+    tuple(get_generic_mailbox_local_parts()) + (
+        "procurement",
+        "purchasing",
+    )
+)
 
 
 def is_generic_mailbox(email: str) -> bool:

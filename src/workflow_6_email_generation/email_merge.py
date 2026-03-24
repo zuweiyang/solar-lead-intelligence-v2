@@ -15,6 +15,7 @@ from config.settings import (
     COMPANY_OPENINGS_FILE,
     SCORED_CONTACTS_FILE,
 )
+from src.market_localization import get_generic_mailbox_local_parts
 
 
 def _normalize_url(url: str) -> str:
@@ -40,10 +41,9 @@ def _as_bool(value: str | bool) -> bool:
     return str(value or "").strip().lower() == "true"
 
 
-_GENERIC_LOCALPARTS: tuple[str, ...] = (
-    "info", "sales", "contato", "comercial", "office",
-    "atendimento", "support", "contact", "hello", "ola",
-)
+_GENERIC_LOCALPARTS: tuple[str, ...] = tuple(dict.fromkeys(
+    tuple(get_generic_mailbox_local_parts("brazil")) + ("ola",)
+))
 
 
 def _is_generic_email(email: str) -> bool:
