@@ -15,6 +15,8 @@ Reusable Streamlit rendering functions.  Each function owns one UI section.
 from __future__ import annotations
 
 import sys
+import time
+from datetime import datetime
 from pathlib import Path
 
 import streamlit as st
@@ -42,6 +44,7 @@ from src.workflow_9_5_streamlit_control_panel.ui_state import (
     load_delivery_ops_snapshot,
     load_pipeline_metrics,
     load_ready_cloud_deploys,
+    load_cloud_deploy_reconciliation,
     load_manual_review_queue,
     load_multi_run_comparison,
     load_file_status,
@@ -205,6 +208,20 @@ def render_campaign_form() -> dict:
             disabled=True,
             help="This reflects the current Send Mode. Use Send Mode to switch between dry_run and real sending.",
         )
+
+    auto_cloud_deploy_default = bool(UI_DEFAULTS.get("auto_cloud_deploy", False))
+    auto_cloud_deploy = st.checkbox(
+        "Auto Upload To Cloud After Completion",
+        value=False if send_mode == "dry_run" else auto_cloud_deploy_default,
+        disabled=send_mode == "dry_run",
+        help=(
+            "When enabled, a live-send campaign that reaches `campaign_status` with a non-empty "
+            "`final_send_queue.csv` will auto-handoff to cloud send. Disable this to keep the run local "
+            "until you manually deploy it from Ready To Deploy."
+        ),
+    )
+    if send_mode == "dry_run":
+        st.caption("Cloud auto-upload is disabled in `dry_run` mode.")
 
     # ---- Location -----------------------------------------------------------
     st.subheader("Location")
@@ -449,6 +466,7 @@ def render_campaign_form() -> dict:
         "enrich_limit":     int(enrich_limit),
         "run_until":        run_until,
         "send_mode":        send_mode,
+        "auto_cloud_deploy": bool(auto_cloud_deploy),
         "dry_run":          dry_run,
         "run_mode":         run_mode,
         "selected_cities":  selected_cities,
@@ -472,7 +490,7 @@ def _detect_dup_jobs(
     """
     Split *cities* into (duplicates, unique) against *active_jobs*.
 
-    Duplicate key: (location, country, region, send_mode, run_until)
+    Duplicate key: (location, country, region, send_mode, run_until, auto_cloud_deploy)
     — location/country/region compared case-insensitively.
     Historical completed/failed jobs do NOT block re-queuing.
     """
@@ -483,6 +501,7 @@ def _detect_dup_jobs(
             form_values.get("region",  "").lower().strip(),
             form_values.get("send_mode",  "dry_run"),
             form_values.get("run_until",  "campaign_status"),
+            bool(form_values.get("auto_cloud_deploy", False)),
         )
 
     active_keys = {
@@ -492,6 +511,7 @@ def _detect_dup_jobs(
             j.get("region", "").lower().strip(),
             j["send_mode"],
             j["run_until"],
+            bool(j.get("auto_cloud_deploy", False)),
         )
         for j in active_jobs
     }
@@ -507,7 +527,8 @@ def _add_jobs_to_queue(cities: list[str], form_values: dict) -> list[str]:
     Call add_job() once per city with the shared form settings.
     Returns a list of human-readable success strings (one per job).
     """
-    from src.workflow_9_queue_scheduler.queue_store import add_job  # noqa: PLC0415
+    import inspect  # noqa: PLC0415
+    from src.workflow_9_queue_scheduler.queue_store import add_job, update_job  # noqa: PLC0415
 
     raw_kw = form_values.get("keywords", "") or ""
     keywords_list: list[str] = (
@@ -517,20 +538,29 @@ def _add_jobs_to_queue(cities: list[str], form_values: dict) -> list[str]:
     )
 
     added = []
+    add_job_params = set(inspect.signature(add_job).parameters.keys())
     for city in cities:
-        job = add_job(
-            location      = city,
-            country       = form_values.get("country", ""),
-            region        = form_values.get("region",  ""),
-            send_mode     = form_values.get("send_mode",  "dry_run"),
-            run_until     = form_values.get("run_until",  "campaign_status"),
-            company_limit = int(form_values.get("company_limit", 0) or 0),
-            crawl_limit   = int(form_values.get("crawl_limit",   0) or 0),
-            enrich_limit  = int(form_values.get("enrich_limit",  0) or 0),
-            keyword_mode  = form_values.get("keyword_mode",  "default"),
-            keywords      = keywords_list,
-            metro_mode    = "base_only",
-        )
+        job_kwargs = {
+            "location": city,
+            "country": form_values.get("country", ""),
+            "region": form_values.get("region", ""),
+            "send_mode": form_values.get("send_mode", "dry_run"),
+            "run_until": form_values.get("run_until", "campaign_status"),
+            "company_limit": int(form_values.get("company_limit", 0) or 0),
+            "crawl_limit": int(form_values.get("crawl_limit", 0) or 0),
+            "enrich_limit": int(form_values.get("enrich_limit", 0) or 0),
+            "keyword_mode": form_values.get("keyword_mode", "default"),
+            "keywords": keywords_list,
+            "metro_mode": "base_only",
+        }
+        desired_auto_cloud_deploy = bool(form_values.get("auto_cloud_deploy", False))
+        add_job_supports_auto_cloud = "auto_cloud_deploy" in add_job_params
+        if add_job_supports_auto_cloud:
+            job_kwargs["auto_cloud_deploy"] = desired_auto_cloud_deploy
+        job = add_job(**job_kwargs)
+        if not add_job_supports_auto_cloud:
+            update_job(job["job_id"], auto_cloud_deploy=desired_auto_cloud_deploy)
+            job["auto_cloud_deploy"] = desired_auto_cloud_deploy
         added.append(f"{job['location']}, {job['country']} (job {job['job_id']})")
     return added
 
@@ -744,6 +774,39 @@ def _stop_scheduler_process() -> str:
 
 
 _QUEUE_PANEL_REFRESH_INTERVAL = 4
+_UI_INTERACTION_PAUSE_SECONDS = 8
+
+
+def _pause_ui_autorefresh(seconds: int = _UI_INTERACTION_PAUSE_SECONDS) -> None:
+    """Temporarily suspend fragment-driven auto-refresh after table interactions."""
+    st.session_state["_ui_autorefresh_paused_until"] = time.time() + max(seconds, 0)
+
+
+def _is_ui_autorefresh_paused() -> bool:
+    paused_until = float(st.session_state.get("_ui_autorefresh_paused_until", 0) or 0)
+    return paused_until > time.time()
+
+
+def _format_local_timestamp(value: str) -> str:
+    """Render queue timestamps in the operator machine's local timezone."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+
+    candidates = [
+        text.replace(" UTC", "+00:00"),
+        text.replace(" UTC", ""),
+        text,
+    ]
+    for candidate in candidates:
+        try:
+            dt = datetime.fromisoformat(candidate)
+            if dt.tzinfo is None:
+                return dt.strftime("%Y-%m-%d %H:%M")
+            return dt.astimezone().strftime("%Y-%m-%d %H:%M")
+        except ValueError:
+            continue
+    return text[:16]
 
 
 def _get_active_campaign_id() -> str:
@@ -839,6 +902,66 @@ def _get_scheduler_status(summary: dict) -> dict:
         "detail":    "No pending jobs. Add cities via Multiple Run above, then start the runner.",
         "pid_alive": False,
     }
+
+
+def _describe_queue_runner_phase(summary: dict, sched: dict) -> tuple[str, str]:
+    """
+    Return a human-readable phase label + explanation for the queue runner.
+
+    This is intentionally more operator-friendly than `_get_scheduler_status()`.
+    It focuses on the question the user actually cares about:
+    "Did my click do anything, and what is the runner doing right now?"
+    """
+    running_job = summary.get("running_job")
+    next_job = summary.get("next_job")
+    pending = int(summary.get("pending") or 0)
+
+    if sched["state"] == "paused":
+        return (
+            "Queue paused",
+            "The scheduler will not claim new jobs until you click Resume Queue.",
+        )
+
+    if running_job:
+        campaign_id = running_job.get("campaign_id") or _get_active_campaign_id()
+        step = _get_running_job_step(campaign_id) if campaign_id else None
+        if step and step in PIPELINE_STEPS:
+            return (
+                "Running workflow steps",
+                f"Job {running_job['job_id']} is actively executing step `{step}`.",
+            )
+        return (
+            "Job claimed, pipeline starting",
+            f"Job {running_job['job_id']} has been claimed by the runner and is waiting for the first workflow step to be logged.",
+        )
+
+    if sched.get("pid_alive") and pending > 0:
+        if next_job:
+            return (
+                "Runner alive, waiting to claim next job",
+                f"The runner is up and the next pending job is {next_job['job_id']} ({next_job['location']}, {next_job['country']}).",
+            )
+        return (
+            "Runner alive, waiting to claim next job",
+            "The runner process is alive and waiting for the next pending job to be claimed.",
+        )
+
+    if sched.get("pid_alive"):
+        return (
+            "Runner idle",
+            "The runner process is alive, but there are no pending jobs to claim right now.",
+        )
+
+    if pending > 0:
+        return (
+            "Pending jobs are waiting for runner start",
+            "Jobs are queued, but the background runner is not currently alive.",
+        )
+
+    return (
+        "Queue idle",
+        "There are no pending jobs and no active queue runner work at the moment.",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1099,6 +1222,10 @@ def render_kpi_dashboard() -> None:
         "Quick answer for operations: how many emails are already in cloud sending, "
         "how many actually sent, which country is active now, and how much was uploaded yesterday."
     )
+    st.caption(
+        "Cloud queue metrics prefer live cloud state: local run folders are reconciled against "
+        "GCS run status and the worker mirror before counts are shown."
+    )
 
     q1, q2, q3, q4 = st.columns(4)
     q1.metric(
@@ -1254,7 +1381,15 @@ def render_kpi_dashboard() -> None:
             st.rerun()
 
     if ready_runs:
-        st.caption("Completed non-dry-run campaigns with final_send_queue.csv that are not already pending/started/completed in cloud deploy.")
+        st.caption(
+            "Completed non-dry-run campaigns that are either not yet handed off to cloud send "
+            "or look stale and need a manifest re-deploy."
+        )
+        st.caption(
+            "Some `gmail_api` runs may already be handed off automatically when Workflow 9 "
+            "finishes at `campaign_status`, so a run can show local cloud-deploy metadata "
+            "even if you did not click a Deploy button here."
+        )
         ready_df = pd.DataFrame(ready_runs)
         ready_df["location"] = ready_df.apply(
             lambda row: f"{row.get('location', '')}, {row.get('country', '')}".strip(", "),
@@ -1268,10 +1403,16 @@ def render_kpi_dashboard() -> None:
             "send_mode": "Send Mode",
             "run_until": "Run Until",
             "deploy_status": "Deploy Status",
+            "cloud_send_status": "Cloud Send",
+            "recovery_reason": "Recovery Reason",
             "modified": "Modified",
         })
         edited_ready = st.data_editor(
-            ready_df[["select", "Campaign", "Location", "Queue", "Send Mode", "Run Until", "Deploy Status", "Modified"]],
+            ready_df[[
+                "select", "Campaign", "Location", "Queue",
+                "Send Mode", "Run Until", "Deploy Status", "Cloud Send",
+                "Recovery Reason", "Modified",
+            ]],
             width="stretch",
             hide_index=True,
             key="ready_cloud_deploy_editor",
@@ -1282,16 +1423,73 @@ def render_kpi_dashboard() -> None:
                     default=False,
                 ),
             },
-            disabled=["Campaign", "Location", "Queue", "Send Mode", "Run Until", "Deploy Status", "Modified"],
+            disabled=[
+                "Campaign", "Location", "Queue", "Send Mode",
+                "Run Until", "Deploy Status", "Cloud Send",
+                "Recovery Reason", "Modified",
+            ],
         )
         selected_campaigns = edited_ready.loc[edited_ready["select"] == True, "Campaign"].tolist()
+        selected_signature = tuple(sorted(selected_campaigns))
+        previous_signature = tuple(st.session_state.get("_ready_deploy_selected_campaigns", ()))
+        if selected_signature != previous_signature:
+            st.session_state["_ready_deploy_selected_campaigns"] = list(selected_signature)
+            _pause_ui_autorefresh()
         if st.button("Deploy Selected", key="deploy_selected_ready", disabled=not selected_campaigns):
             batch_result = trigger_cloud_batch_deploy(campaign_ids=selected_campaigns)
             refresh_dashboard_state()
             st.session_state["_cloud_batch_deploy_result"] = batch_result
             st.rerun()
+        if _is_ui_autorefresh_paused():
+            st.caption(
+                "Auto-refresh is temporarily paused for a few seconds so row selection stays stable while you pick campaigns."
+            )
+        st.caption(
+            "Rows marked `stale_handoff_redeploy` mean the run reached cloud deploy completed "
+            "but never advanced into cloud send, so re-deploying will re-queue its manifest."
+        )
     else:
         st.info("No completed runs are currently waiting for cloud deploy.")
+
+    st.subheader("Cloud Deploy History / Reconciliation")
+    recon_rows = load_cloud_deploy_reconciliation(limit=20)
+    if recon_rows:
+        recon_df = pd.DataFrame(recon_rows)
+        recon_df["location"] = recon_df.apply(
+            lambda row: f"{row.get('location', '')}, {row.get('country', '')}".strip(", "),
+            axis=1,
+        )
+        recon_df = recon_df.rename(columns={
+            "campaign_id": "Campaign",
+            "location": "Location",
+            "final_send_queue": "Emails In Final Queue",
+            "cloud_handoff": "Cloud Handoff",
+            "deploy_status": "Deploy Status",
+            "cloud_send_status": "Cloud Send",
+            "reconciliation": "Reconciliation",
+            "note": "Note",
+            "modified": "Modified",
+        })
+        st.caption(
+            "Recent live-send handoffs reconciled across local run files, queue metadata, "
+            "and cloud worker state. Use this to distinguish manual deploys, auto-on-complete, "
+            "active waiting campaigns, failures, and historical mismatches."
+        )
+        st.caption(
+            "Cloud send lifecycle: `queued in cloud manifest backlog` -> "
+            "`claimed by cloud worker, waiting for send window` -> `sending` -> `completed`."
+        )
+        st.dataframe(
+            recon_df[[
+                "Campaign", "Location", "Emails In Final Queue", "Cloud Handoff",
+                "Deploy Status", "Cloud Send", "Reconciliation",
+                "Note", "Modified",
+            ]],
+            width="stretch",
+            hide_index=True,
+        )
+    else:
+        st.caption("No recent live-send cloud handoff history found.")
 
     r1, r2, r3, r4 = st.columns(4)
     r1.metric(
@@ -1874,6 +2072,15 @@ def _render_queue_panel_content() -> None:
         else:
             st.info(f"**Scheduler — Idle** | {sched['detail']}")
 
+        phase_title, phase_detail = _describe_queue_runner_phase(summary, sched)
+        st.caption(
+            "Runner lifecycle: "
+            "`Start Runner` -> `queued in scheduler` -> "
+            "`claimed job / waiting for first workflow step` -> "
+            "`running workflow step` -> `completed`"
+        )
+        st.caption(f"**Now:** {phase_title}. {phase_detail}")
+
     with btn_col:
         # Don't allow Start while a job is actively running (lock present)
         job_running = sched["state"] == "active" and is_campaign_running()
@@ -1934,9 +2141,23 @@ def _render_queue_panel_content() -> None:
                     progress = (idx + 1) / len(PIPELINE_STEPS)
                     st.progress(progress, text=f"Step {idx + 1}/{len(PIPELINE_STEPS)}: `{step}`")
                 else:
-                    st.progress(0.0, text="Waiting for first step…")
+                    st.progress(
+                        0.02,
+                        text="Job claimed by runner. Waiting for the first workflow step to be logged...",
+                    )
+                    st.caption(
+                        "This short gap is normal: the queue job has started, but `campaign_runner_logs.csv` has not written its first step yet."
+                    )
         else:
-            st.info("No job currently running.")
+            if sched.get("pid_alive") and summary["pending"] > 0:
+                st.info("Runner is alive and waiting to claim the next pending job.")
+                st.caption(
+                    "If this message persists for more than a few refresh cycles, check `data/queue_runner.log` for the handoff details."
+                )
+            elif sched.get("pid_alive"):
+                st.info("No job is currently running. The runner process is alive and idle.")
+            else:
+                st.info("No job currently running.")
 
         if next_job:
             st.info(
@@ -1983,10 +2204,18 @@ def _render_queue_panel_content() -> None:
             "location":  f"{j['location']}, {j['country']}",
             "priority":  j["priority"],
             "send_mode": j["send_mode"],
+            "cloud_handoff": (
+                "disabled" if j["send_mode"] == "dry_run"
+                else (
+                    "auto" if j.get("auto_cloud_deploy") is True
+                    else "manual" if j.get("auto_cloud_deploy") is False
+                    else "legacy"
+                )
+            ),
             "run_until": j["run_until"],
             "campaign":  j.get("campaign_id", ""),
-            "started":   j.get("started_at", "")[:16],
-            "finished":  j.get("completed_at", "")[:16],
+            "started":   _format_local_timestamp(j.get("started_at", "")),
+            "finished":  _format_local_timestamp(j.get("completed_at", "")),
             "error":     (j.get("error") or "")[:60],
         })
 
@@ -2005,9 +2234,10 @@ def _render_queue_panel_content() -> None:
             "job_id": column_config.TextColumn("job_id", width="small"),
             "status": column_config.TextColumn("status", width="small"),
             "location": column_config.TextColumn("location", width="medium"),
+            "cloud_handoff": column_config.TextColumn("cloud_handoff", width="small"),
             "error": column_config.TextColumn("error", width="large"),
         },
-        disabled=["job_id", "status", "location", "priority", "send_mode", "run_until", "campaign", "started", "finished", "error"],
+        disabled=["job_id", "status", "location", "priority", "send_mode", "cloud_handoff", "run_until", "campaign", "started", "finished", "error"],
     )
 
     selected_ids = (
@@ -2071,4 +2301,7 @@ def render_queue_panel() -> None:
     Uses Streamlit fragment auto-refresh when available so the queue state and
     progress bar update without relying on browser-side rerun hacks.
     """
+    if _is_ui_autorefresh_paused():
+        _render_queue_panel_content()
+        return
     _render_queue_panel_fragment()

@@ -15,6 +15,8 @@ from zoneinfo import ZoneInfo
 
 from config.settings import (
     CAMPAIGN_RUN_STATE_FILE,
+    CAMPAIGN_QUEUE_FILE,
+    RUNS_DIR,
     SEND_WINDOW_END,
     SEND_WINDOW_SLOTS,
     SEND_WINDOW_START,
@@ -66,13 +68,24 @@ _COUNTRY_BUSINESS_DAYS = {
     "ksa": _SAUDI_BUSINESS_DAYS,
 }
 
+_MULTIPART_PUBLIC_SUFFIXES = {
+    "co.jp",
+    "co.kr",
+    "co.nz",
+    "co.uk",
+    "com.au",
+    "com.br",
+    "com.mx",
+    "com.sg",
+}
+
 
 def _normalize_text(value: str) -> str:
     return (value or "").strip().lower()
 
 
 def _root_domain(email_or_website: str) -> str:
-    """Return the root domain (last two labels) of an email address or URL."""
+    """Return the registrable domain of an email address or URL."""
     value = _normalize_text(email_or_website)
     if not value:
         return ""
@@ -85,7 +98,13 @@ def _root_domain(email_or_website: str) -> str:
     if not value:
         return ""
     parts = value.split(".")
-    return ".".join(parts[-2:]) if len(parts) >= 2 else value
+    if len(parts) < 2:
+        return value
+
+    suffix = ".".join(parts[-2:])
+    if len(parts) >= 3 and suffix in _MULTIPART_PUBLIC_SUFFIXES:
+        return ".".join(parts[-3:])
+    return suffix
 
 
 def _normalize_company(name: str) -> str:
@@ -128,17 +147,49 @@ def _location_from_source(source_location: str) -> tuple[str, str]:
 
 
 def _load_campaign_state(campaign_id: str = "") -> dict:
-    if not CAMPAIGN_RUN_STATE_FILE.exists():
-        return {}
+    candidate_paths = []
+    if campaign_id:
+        candidate_paths.append(RUNS_DIR / campaign_id / CAMPAIGN_RUN_STATE_FILE.name)
+    candidate_paths.append(CAMPAIGN_RUN_STATE_FILE)
+
+    for path in candidate_paths:
+        if not path.exists():
+            continue
+        try:
+            with open(path, encoding="utf-8") as f:
+                state = json.load(f)
+        except Exception:
+            continue
+        saved_campaign_id = (state.get("campaign_id") or "").strip()
+        if campaign_id and saved_campaign_id and campaign_id != saved_campaign_id:
+            continue
+        if isinstance(state, dict):
+            return state
+    return {}
+
+
+def _load_campaign_queue_location(campaign_id: str = "") -> tuple[str, str]:
+    """Fallback location lookup for queue-run campaign_ids that lack run state."""
+    if not campaign_id or not CAMPAIGN_QUEUE_FILE.exists():
+        return "", ""
     try:
-        with open(CAMPAIGN_RUN_STATE_FILE, encoding="utf-8") as f:
-            state = json.load(f)
+        with open(CAMPAIGN_QUEUE_FILE, encoding="utf-8") as f:
+            jobs = json.load(f)
     except Exception:
-        return {}
-    saved_campaign_id = (state.get("campaign_id") or "").strip()
-    if campaign_id and saved_campaign_id and campaign_id != saved_campaign_id:
-        return {}
-    return state
+        return "", ""
+    if not isinstance(jobs, list):
+        return "", ""
+
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        if (job.get("campaign_id") or "").strip() != campaign_id:
+            continue
+        return (
+            (job.get("location") or "").strip(),
+            (job.get("country") or "").strip(),
+        )
+    return "", ""
 
 
 def _resolve_location(record: dict, campaign_id: str = "") -> tuple[str, str]:
@@ -155,8 +206,16 @@ def _resolve_location(record: dict, campaign_id: str = "") -> tuple[str, str]:
 
     state = _load_campaign_state(campaign_id=campaign_id)
     if state:
+        cfg = state.get("config") or {}
+        if isinstance(cfg, dict):
+            city = city or (cfg.get("base_city") or cfg.get("city") or "").strip()
+            country = country or (cfg.get("country") or "").strip()
         city = city or (state.get("base_city") or state.get("city") or "").strip()
         country = country or (state.get("country") or "").strip()
+    if not (city and country):
+        q_city, q_country = _load_campaign_queue_location(campaign_id=campaign_id)
+        city = city or q_city
+        country = country or q_country
     return city, country
 
 

@@ -45,6 +45,7 @@ from config.settings import (
     CLOUD_WORKER_POLL_SECONDS,
     DATA_DIR,
     GCS_BUCKET,
+    GCS_RUNS_PREFIX,
     GCS_STATUS_PREFIX,
     REPLY_LOGS_FILE,
     RUNS_DIR,
@@ -284,16 +285,93 @@ def _list_gcs_run_campaign_ids() -> list[str]:
 
 
 def _load_run_config(run_dir: Path) -> dict:
+    campaign_id = run_dir.name
     state_path = run_dir / "campaign_run_state.json"
     if not state_path.exists():
+        state = {}
+    else:
+        try:
+            with open(state_path, encoding="utf-8") as f:
+                data = json.load(f)
+            cfg = data.get("config", {})
+            state = cfg if isinstance(cfg, dict) else {}
+        except Exception:
+            state = {}
+
+    if state:
+        return state
+
+    if CAMPAIGN_QUEUE_FILE.exists():
+        try:
+            with open(CAMPAIGN_QUEUE_FILE, encoding="utf-8") as f:
+                jobs = json.load(f)
+        except Exception:
+            jobs = []
+        if isinstance(jobs, list):
+            for job in jobs:
+                if not isinstance(job, dict):
+                    continue
+                if str(job.get("campaign_id") or "").strip() != campaign_id:
+                    continue
+                send_mode = str(job.get("send_mode") or "").strip()
+                return {
+                    "base_city": str(job.get("location") or "").strip(),
+                    "city": str(job.get("location") or "").strip(),
+                    "region": str(job.get("region") or "").strip(),
+                    "country": str(job.get("country") or "").strip(),
+                    "run_until": str(job.get("run_until") or "").strip(),
+                    "send_mode": send_mode,
+                    "auto_cloud_deploy": job.get("auto_cloud_deploy"),
+                    "dry_run": send_mode.lower() == "dry_run",
+                }
+    return {}
+
+
+def _cloud_handoff_label(auto_cloud_deploy: object, send_mode: str) -> str:
+    if str(send_mode or "").strip().lower() == "dry_run":
+        return "disabled"
+    if auto_cloud_deploy is True:
+        return "auto"
+    if auto_cloud_deploy is False:
+        return "manual"
+    return "legacy"
+
+
+def _cloud_send_status_label(status: str, *, claimed: bool = False) -> str:
+    normalized = str(status or "").strip().lower()
+    if claimed or normalized == "waiting_window":
+        return "claimed by cloud worker, waiting for send window"
+    if normalized == "queued":
+        return "queued in cloud manifest backlog"
+    if normalized == "sending":
+        return "sending"
+    if normalized == "completed":
+        return "completed"
+    if normalized == "failed":
+        return "failed"
+    if normalized == "synced":
+        return "synced to cloud worker"
+    if normalized in {"", "not_queued"}:
+        return "not queued"
+    return normalized
+
+
+def _load_queue_job(campaign_id: str) -> dict:
+    if not campaign_id or not CAMPAIGN_QUEUE_FILE.exists():
         return {}
     try:
-        with open(state_path, encoding="utf-8") as f:
-            data = json.load(f)
-        cfg = data.get("config", {})
-        return cfg if isinstance(cfg, dict) else {}
+        with open(CAMPAIGN_QUEUE_FILE, encoding="utf-8") as f:
+            jobs = json.load(f)
     except Exception:
         return {}
+    if not isinstance(jobs, list):
+        return {}
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        if str(job.get("campaign_id") or "").strip() == campaign_id:
+            return job
+    return {}
 
 
 def _parse_dt(value: str) -> datetime | None:
@@ -571,6 +649,18 @@ def load_delivery_ops_snapshot() -> dict:
     except Exception:
         jobs = []
 
+    worker_state = _read_json_from_gcs("cloud_send_worker_state.json")
+    worker_completed = {
+        str(cid).strip()
+        for cid in (worker_state.get("completed_campaigns") or [])
+        if str(cid).strip()
+    }
+    worker_failed = {
+        str(cid).strip()
+        for cid in (worker_state.get("failed_campaigns") or [])
+        if str(cid).strip()
+    }
+
     current_job = next((j for j in jobs if j.get("status") == "running"), None)
     current_country = ""
     current_location = ""
@@ -605,6 +695,7 @@ def load_delivery_ops_snapshot() -> dict:
     cloud_waiting_runs = 0
     cloud_sending_runs = 0
     cloud_failed_runs = 0
+    counted_campaign_ids: set[str] = set()
 
     run_dirs = []
     if RUNS_DIR.exists():
@@ -618,7 +709,9 @@ def load_delivery_ops_snapshot() -> dict:
         cfg = _load_run_config(run_dir)
         send_mode = str(cfg.get("send_mode") or "").strip().lower()
         dry_run = str(cfg.get("dry_run") or "").strip().lower() == "true"
-        if send_mode != "gmail_api" or dry_run:
+        if send_mode and send_mode != "gmail_api":
+            continue
+        if dry_run:
             continue
 
         cloud_status = _read_json(run_dir / "cloud_deploy_status.json")
@@ -627,8 +720,23 @@ def load_delivery_ops_snapshot() -> dict:
         deploy_state = str(cloud_status.get("cloud_deploy_status") or "").strip().lower()
         if deploy_state != "completed":
             continue
+        if not send_summary:
+            continue
 
         send_state = str(cloud_send.get("cloud_send_status") or "").strip().lower()
+        gcs_cloud_send = _read_run_json_from_gcs(campaign_id, "cloud_send_status.json")
+        gcs_send_state = str(gcs_cloud_send.get("cloud_send_status") or "").strip().lower()
+        if gcs_send_state:
+            cloud_send = gcs_cloud_send
+            send_state = gcs_send_state
+
+        live_cloud_state = bool(gcs_send_state)
+
+        if campaign_id in worker_completed and not live_cloud_state:
+            send_state = "completed"
+        elif campaign_id in worker_failed and send_state in {"", "not_queued", "queued"}:
+            send_state = "failed"
+
         if send_state == "queued":
             cloud_queued_runs += 1
         elif send_state in {"synced", "waiting_window"}:
@@ -638,6 +746,7 @@ def load_delivery_ops_snapshot() -> dict:
         elif send_state == "failed":
             cloud_failed_runs += 1
 
+        counted_campaign_ids.add(campaign_id)
         cloud_run_count += 1
         send_total = int(send_summary.get("total") or 0)
         sent_total = int(send_summary.get("sent") or 0)
@@ -654,53 +763,67 @@ def load_delivery_ops_snapshot() -> dict:
             uploaded_yesterday_runs += 1
             uploaded_yesterday_emails += send_total
 
-    if not run_dirs or cloud_run_count == 0:
+    should_supplement_from_gcs = not run_dirs or cloud_run_count == 0
+    if should_supplement_from_gcs:
         for campaign_id in _list_gcs_run_campaign_ids():
-            cloud_status = _read_run_json_from_gcs(campaign_id, "cloud_deploy_status.json")
-            cloud_send = _read_run_json_from_gcs(campaign_id, "cloud_send_status.json")
-            send_summary = _read_run_json_from_gcs(campaign_id, "send_batch_summary.json")
-            cfg = _read_run_json_from_gcs(campaign_id, "campaign_run_state.json").get("config", {})
-            if not isinstance(cfg, dict):
-                cfg = {}
-
-            send_mode = str(cfg.get("send_mode") or "").strip().lower()
-            dry_run = str(cfg.get("dry_run") or "").strip().lower() == "true"
-            if send_mode and send_mode != "gmail_api":
-                continue
-            if dry_run:
+            if campaign_id in counted_campaign_ids:
                 continue
 
-            deploy_state = str(cloud_status.get("cloud_deploy_status") or "").strip().lower()
-            if deploy_state != "completed":
+            try:
+                cloud_status = _read_run_json_from_gcs(campaign_id, "cloud_deploy_status.json")
+                cloud_send = _read_run_json_from_gcs(campaign_id, "cloud_send_status.json")
+                send_summary = _read_run_json_from_gcs(campaign_id, "send_batch_summary.json")
+                cfg = _read_run_json_from_gcs(campaign_id, "campaign_run_state.json").get("config", {})
+                if not isinstance(cfg, dict):
+                    cfg = {}
+
+                send_mode = str(cfg.get("send_mode") or "").strip().lower()
+                dry_run = str(cfg.get("dry_run") or "").strip().lower() == "true"
+                if send_mode and send_mode != "gmail_api":
+                    continue
+                if dry_run:
+                    continue
+
+                deploy_state = str(cloud_status.get("cloud_deploy_status") or "").strip().lower()
+                if deploy_state != "completed":
+                    continue
+                if not send_summary:
+                    continue
+
+                send_state = str(cloud_send.get("cloud_send_status") or "").strip().lower()
+                live_cloud_state = bool(send_state)
+                if campaign_id in worker_completed and not live_cloud_state:
+                    send_state = "completed"
+                elif campaign_id in worker_failed and send_state in {"", "not_queued", "queued"}:
+                    send_state = "failed"
+
+                if send_state == "queued":
+                    cloud_queued_runs += 1
+                elif send_state in {"synced", "waiting_window"}:
+                    cloud_waiting_runs += 1
+                elif send_state == "sending":
+                    cloud_sending_runs += 1
+                elif send_state == "failed":
+                    cloud_failed_runs += 1
+
+                counted_campaign_ids.add(campaign_id)
+                cloud_run_count += 1
+                send_total = int(send_summary.get("total") or 0)
+                sent_total = int(send_summary.get("sent") or 0)
+                cloud_delegated_emails += send_total
+                sent_successfully += sent_total
+
+                uploaded_at = (
+                    cloud_status.get("cloud_deploy_uploaded_at")
+                    or cloud_status.get("cloud_deploy_updated_at")
+                    or ""
+                )
+                uploaded_dt = _parse_dt(str(uploaded_at))
+                if uploaded_dt and uploaded_dt.date() == yesterday:
+                    uploaded_yesterday_runs += 1
+                    uploaded_yesterday_emails += send_total
+            except Exception:
                 continue
-            if not send_summary:
-                continue
-
-            send_state = str(cloud_send.get("cloud_send_status") or "").strip().lower()
-            if send_state == "queued":
-                cloud_queued_runs += 1
-            elif send_state in {"synced", "waiting_window"}:
-                cloud_waiting_runs += 1
-            elif send_state == "sending":
-                cloud_sending_runs += 1
-            elif send_state == "failed":
-                cloud_failed_runs += 1
-
-            cloud_run_count += 1
-            send_total = int(send_summary.get("total") or 0)
-            sent_total = int(send_summary.get("sent") or 0)
-            cloud_delegated_emails += send_total
-            sent_successfully += sent_total
-
-            uploaded_at = (
-                cloud_status.get("cloud_deploy_uploaded_at")
-                or cloud_status.get("cloud_deploy_updated_at")
-                or ""
-            )
-            uploaded_dt = _parse_dt(str(uploaded_at))
-            if uploaded_dt and uploaded_dt.date() == yesterday:
-                uploaded_yesterday_runs += 1
-                uploaded_yesterday_emails += send_total
 
     send_log_rows = _read_csv(Path(str(SEND_LOGS_FILE)))
     engagement_rows = _read_csv(Path(str(ENGAGEMENT_LOGS_FILE)))
@@ -884,7 +1007,26 @@ def load_ready_cloud_deploys(limit: int = 20) -> list[dict]:
     if not RUNS_DIR.exists():
         return rows
 
-    blocked_statuses = {"pending", "started", "completed"}
+    blocked_statuses = {"pending", "started"}
+    stale_after_minutes = 30
+    worker_state = _read_json_from_gcs("cloud_send_worker_state.json")
+    worker_completed = {
+        str(cid).strip()
+        for cid in (worker_state.get("completed_campaigns") or [])
+        if str(cid).strip()
+    }
+    worker_failed = {
+        str(cid).strip()
+        for cid in (worker_state.get("failed_campaigns") or [])
+        if str(cid).strip()
+    }
+    worker_active = {
+        str(worker_state.get("active_campaign_id") or "").strip(),
+        str(worker_state.get("last_wait_campaign_id") or "").strip(),
+        str(worker_state.get("last_selected_campaign_id") or "").strip(),
+        str(worker_state.get("claimed_campaign_id") or "").strip(),
+    }
+    worker_active = {cid for cid in worker_active if cid}
     for run_dir in sorted(RUNS_DIR.iterdir(), reverse=True):
         if not run_dir.is_dir():
             continue
@@ -901,14 +1043,77 @@ def load_ready_cloud_deploys(limit: int = 20) -> list[dict]:
             continue
 
         deploy = _read_json(run_dir / "cloud_deploy_status.json")
+        cloud_send = _read_json(run_dir / "cloud_send_status.json")
         deploy_status = str(deploy.get("cloud_deploy_status") or "").strip().lower()
         if deploy_status in blocked_statuses:
             continue
 
         queue_count = _count_csv(final_queue)
         state = _read_json(run_dir / "campaign_run_state.json")
-        run_status = str(state.get("status") or "").strip().lower()
+        queue_job = _load_queue_job(campaign_id)
+        run_status = str(state.get("status") or queue_job.get("status") or "").strip().lower()
         if run_status != "completed":
+            continue
+
+        send_status = str(cloud_send.get("cloud_send_status") or "").strip().lower()
+        gcs_cloud_send = _read_run_json_from_gcs(campaign_id, "cloud_send_status.json")
+        gcs_send_status = str(gcs_cloud_send.get("cloud_send_status") or "").strip().lower()
+        if gcs_send_status:
+            cloud_send = gcs_cloud_send
+            send_status = gcs_send_status
+
+        live_cloud_state = bool(gcs_send_status)
+
+        if send_status == "completed":
+            continue
+        if campaign_id in worker_completed and not live_cloud_state:
+            continue
+        if campaign_id in worker_active:
+            continue
+        if campaign_id in worker_failed and send_status in {"", "not_queued", "queued"}:
+            send_status = "failed"
+
+        deploy_updated = _parse_dt(
+            str(
+                deploy.get("cloud_deploy_updated_at")
+                or deploy.get("cloud_deploy_uploaded_at")
+                or ""
+            )
+        )
+        send_updated = _parse_dt(str(cloud_send.get("cloud_send_updated_at") or ""))
+        latest_state_dt = send_updated or deploy_updated
+        minutes_since_update = None
+        if latest_state_dt is not None:
+            minutes_since_update = max(
+                int((datetime.now() - latest_state_dt.replace(tzinfo=None)).total_seconds() // 60),
+                0,
+            )
+
+        deploy_status_label = deploy_status or "not_started"
+        recovery_reason = ""
+        eligible = False
+
+        if deploy_status in {"", "not_enabled", "failed"}:
+            eligible = True
+        elif deploy_status == "completed":
+            if send_status in {"sending", "synced", "waiting_window", "completed"}:
+                eligible = False
+            elif send_status == "failed":
+                eligible = True
+                deploy_status_label = "send_failed_redeploy"
+                recovery_reason = "cloud send failed; ready to redeploy manifest"
+            elif send_status in {"", "not_queued", "queued"}:
+                if minutes_since_update is None or minutes_since_update >= stale_after_minutes:
+                    eligible = True
+                    deploy_status_label = "stale_handoff_redeploy"
+                    recovery_reason = (
+                        "cloud deploy completed but cloud send never advanced beyond "
+                        f"{send_status or 'missing_status'}"
+                    )
+            else:
+                eligible = False
+
+        if not eligible:
             continue
 
         rows.append({
@@ -916,9 +1121,120 @@ def load_ready_cloud_deploys(limit: int = 20) -> list[dict]:
             "location": str(cfg.get("base_city") or cfg.get("city") or "").strip(),
             "country": str(cfg.get("country") or "").strip(),
             "send_mode": send_mode or "unknown",
+            "cloud_handoff": _cloud_handoff_label(cfg.get("auto_cloud_deploy"), send_mode),
             "run_until": str(cfg.get("run_until") or "").strip(),
             "queue_count": queue_count,
-            "deploy_status": deploy_status or "not_started",
+            "deploy_status": deploy_status_label,
+            "cloud_send_status": _cloud_send_status_label(send_status),
+            "recovery_reason": recovery_reason,
+            "modified": _mtime(final_queue),
+        })
+
+    rows.sort(key=lambda row: (row.get("modified", ""), row.get("campaign_id", "")), reverse=True)
+    return rows[:limit]
+
+
+def load_cloud_deploy_reconciliation(limit: int = 20) -> list[dict]:
+    """
+    Return a reconciled cloud handoff history view for live-send campaigns.
+
+    Purpose:
+    - show whether a run was prepared for auto/manual cloud handoff
+    - show the current cloud/worker state
+    - surface mismatches such as worker-completed vs live queued cloud state
+    """
+    rows: list[dict] = []
+    if not RUNS_DIR.exists():
+        return rows
+
+    worker_state = _read_json_from_gcs("cloud_send_worker_state.json")
+    worker_completed = {
+        str(cid).strip()
+        for cid in (worker_state.get("completed_campaigns") or [])
+        if str(cid).strip()
+    }
+    worker_failed = {
+        str(cid).strip()
+        for cid in (worker_state.get("failed_campaigns") or [])
+        if str(cid).strip()
+    }
+    worker_active = {
+        str(worker_state.get("active_campaign_id") or "").strip(),
+        str(worker_state.get("last_wait_campaign_id") or "").strip(),
+        str(worker_state.get("last_selected_campaign_id") or "").strip(),
+        str(worker_state.get("claimed_campaign_id") or "").strip(),
+    }
+    worker_active = {cid for cid in worker_active if cid}
+
+    for run_dir in sorted(RUNS_DIR.iterdir(), reverse=True):
+        if not run_dir.is_dir():
+            continue
+
+        campaign_id = run_dir.name
+        final_queue = run_dir / "final_send_queue.csv"
+        if not final_queue.exists():
+            continue
+
+        cfg = _load_run_config(run_dir)
+        queue_job = _load_queue_job(campaign_id)
+        send_mode = str(cfg.get("send_mode") or "").strip().lower()
+        send_summary = _read_json(run_dir / "send_batch_summary.json")
+        if not send_mode:
+            if int(send_summary.get("dry_run") or 0) == 0:
+                send_mode = "live_unknown"
+            else:
+                continue
+
+        dry_run = str(cfg.get("dry_run") or "").strip().lower() == "true"
+        if send_mode == "dry_run" or dry_run:
+            continue
+
+        deploy = _read_json(run_dir / "cloud_deploy_status.json")
+        cloud_send = _read_json(run_dir / "cloud_send_status.json")
+        gcs_cloud_send = _read_run_json_from_gcs(campaign_id, "cloud_send_status.json")
+        if gcs_cloud_send:
+            cloud_send = gcs_cloud_send
+
+        deploy_status = str(deploy.get("cloud_deploy_status") or "").strip().lower() or "not_enabled"
+        send_status = str(cloud_send.get("cloud_send_status") or "").strip().lower() or "not_queued"
+
+        if campaign_id in worker_active:
+            reconciliation = "currently_waiting"
+            note = "claimed by cloud worker, waiting for send window"
+        elif campaign_id in worker_failed or send_status == "failed":
+            reconciliation = "failed_recovery"
+            note = "cloud send failed; recovery / redeploy candidate"
+        elif campaign_id in worker_completed and send_status in {"queued", "not_queued"}:
+            reconciliation = "historical_inconsistent"
+            note = "worker history says completed but live/local cloud state still looks queued"
+        else:
+            handoff = _cloud_handoff_label(
+                cfg.get("auto_cloud_deploy", queue_job.get("auto_cloud_deploy")),
+                send_mode,
+            )
+            reconciliation = "auto_on_complete" if handoff == "auto" else "manual_deploy"
+            if handoff == "legacy":
+                reconciliation = "manual_deploy"
+                note = "legacy run; no per-run handoff flag was stored"
+            else:
+                note = f"{handoff} cloud handoff configuration"
+
+        rows.append({
+            "campaign_id": campaign_id,
+            "location": str(cfg.get("base_city") or cfg.get("city") or queue_job.get("location") or "").strip(),
+            "country": str(cfg.get("country") or queue_job.get("country") or "").strip(),
+            "final_send_queue": _count_csv(final_queue),
+            "cloud_handoff": _cloud_handoff_label(
+                cfg.get("auto_cloud_deploy", queue_job.get("auto_cloud_deploy")),
+                send_mode,
+            ),
+            "deploy_status": deploy_status,
+            "cloud_send_status": _cloud_send_status_label(
+                send_status,
+                claimed=(campaign_id in worker_active),
+            ),
+            "reconciliation": reconciliation,
+            "note": note,
             "modified": _mtime(final_queue),
         })
 

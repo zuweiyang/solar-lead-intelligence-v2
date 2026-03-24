@@ -13,6 +13,7 @@ Job schema
   status           pending | running | completed | failed | paused
   priority         int, lower = higher priority (default 10)
   send_mode        dry_run | smtp | gmail_api
+  auto_cloud_deploy bool   true = auto handoff to cloud after completion
   run_until        pipeline step to stop after (default campaign_status)
   campaign_id      filled in when job starts running
   created_at       ISO UTC timestamp
@@ -35,6 +36,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -78,7 +80,15 @@ def _load_raw() -> list[dict]:
 
 
 def _save_raw(jobs: list[dict]) -> None:
-    """Atomic write: write to temp file, then rename over queue file."""
+    """
+    Atomic write with a short retry window on Windows.
+
+    Streamlit and the background queue runner can touch `campaign_queue.json`
+    at nearly the same time. On Windows, replacing the destination file can
+    briefly fail with `PermissionError: [WinError 5]` if another process still
+    has the target open. A short retry loop is enough to turn that race into a
+    successful write instead of a runner crash.
+    """
     CAMPAIGN_QUEUE_FILE.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(
         dir=str(CAMPAIGN_QUEUE_FILE.parent),
@@ -88,7 +98,21 @@ def _save_raw(jobs: list[dict]) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(jobs, f, indent=2, ensure_ascii=False)
-        Path(tmp_path).replace(CAMPAIGN_QUEUE_FILE)
+
+        last_exc: Exception | None = None
+        for attempt in range(6):
+            try:
+                Path(tmp_path).replace(CAMPAIGN_QUEUE_FILE)
+                last_exc = None
+                break
+            except PermissionError as exc:
+                last_exc = exc
+                if attempt == 5:
+                    raise
+                time.sleep(0.15 * (attempt + 1))
+
+        if last_exc is not None:
+            raise last_exc
     except Exception:
         try:
             os.unlink(tmp_path)
@@ -107,6 +131,7 @@ def add_job(
     region: str = "",
     priority: int = 10,
     send_mode: str = "dry_run",
+    auto_cloud_deploy: bool = False,
     run_until: str = "campaign_status",
     keyword_mode: str = "default",
     keywords: list[str] | None = None,
@@ -125,6 +150,7 @@ def add_job(
         "status":          STATUS_PENDING,
         "priority":        int(priority),
         "send_mode":       send_mode,
+        "auto_cloud_deploy": bool(auto_cloud_deploy),
         "run_until":       run_until,
         "campaign_id":     "",
         "created_at":      _now(),

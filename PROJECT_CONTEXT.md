@@ -907,6 +907,24 @@ Visual UI layer on top of Workflow 9 — Campaign Runner. Allows a non-technical
   - `Review Required` / `Review %` = `review_required` rows from `send_batch_summary.json`
   - `Hard Blocked` = true send-stage blocks from `send_batch_summary.json`
 - The **Manual Review Queue** panel now shows lightweight operator summary metrics (review item count, unique companies, unique review reasons) above the table to help triage campaigns without opening CSV files manually.
+- Cloud send recovery path:
+  - `load_ready_cloud_deploys()` no longer hides every `cloud_deploy_status=completed` run.
+  - A completed deploy can reappear in **Ready To Deploy** when cloud send never advanced (`cloud_send_status` missing / `not_queued` / `queued`) for at least 30 minutes, or when `cloud_send_status=failed`.
+  - These recovery rows are labeled with deploy statuses such as `stale_handoff_redeploy` or `send_failed_redeploy`, and the table now shows both `Cloud Send` and `Recovery Reason`.
+  - Control-panel cloud deploy actions now call `deploy_runs(..., force=True)` so operators can re-queue a stale manifest without dropping to the CLI.
+- Cloud worker re-deploy bug fix:
+  - Root cause of `no_actionable_manifests` with visible manifests: `scripts/cloud_send_worker.py` previously skipped any manifest whose `campaign_id` was already present in the worker's in-memory `completed_campaigns` / `failed_campaigns` sets, even if the operator had re-deployed the same campaign and the fresh run-scoped `cloud_send_status.json` had been reset to `queued`.
+  - The worker now relies on `_reconcile_manifest_with_run_state()` plus current run-scoped cloud-send status, instead of blindly short-circuiting on historical completed/failed memory.
+  - Effect: a fresh re-deployed manifest for an existing `campaign_id` can re-enter candidate preparation and actually progress to `synced` / `waiting_window` / `sending`, instead of being stranded in `manifests/` while the worker reports `no_actionable_manifests`.
+- Market/timezone fallback hardening for cloud send:
+  - Root cause of `cloud_send_market=""` / `cloud_send_timezone="UTC"` on some queue-run campaigns: their `final_send_queue.csv` rows did not carry city/country fields, and some run folders lacked `campaign_run_state.json`, so `send_guard._resolve_location()` exhausted its old fallbacks and defaulted to UTC.
+  - `src/workflow_7_email_sending/send_guard.py` now resolves market context in this order:
+    1. row-level `city` / `country`
+    2. row-level `source_location`
+    3. run-scoped `data/runs/<campaign_id>/campaign_run_state.json`
+    4. global `data/campaign_run_state.json`
+    5. `data/campaign_queue.json` match by `campaign_id`
+  - Effect: queue-generated cloud-send campaigns that only preserve `campaign_id` can still recover `location/country` and therefore use the correct country/city timezone mapping instead of silently falling back to `UTC`.
 - `app.py` — `st.set_page_config()` + calls all render functions in layout order
 
 **Compatibility:**
@@ -3493,3 +3511,216 @@ Current operational interpretation for bounce handling:
 - Workflow 7.8 ingests later bounce/reply messages from Gmail
 - matched bounces become suppression state
 - subsequent automation can stop re-sending to those addresses
+
+### Cloud Send Market Metadata Hydration (2026-03-24)
+
+Two distinct failure modes were found behind queue-run cloud sends falling back
+to `cloud_send_market=""` and `cloud_send_timezone="UTC"`:
+
+1. Worker-side fallback gap:
+   - some `final_send_queue.csv` rows carry no `city` / `country`
+   - some queue-run folders also lack `data/runs/<campaign_id>/campaign_run_state.json`
+   - `send_guard._resolve_location()` therefore used to exhaust its old fallback
+     chain and silently default to `UTC`
+
+2. Deploy-side metadata loss:
+   - `scripts/deploy_run_to_gcloud.py` originally built manifests only from the
+     run folder's `campaign_run_state.json`
+   - older queue-run folders without that file therefore uploaded:
+     - manifests with blank `city` / `region` / `country`
+     - run folders with no run-scoped campaign metadata for worker fallback
+
+Current hardening:
+
+- `src/workflow_7_email_sending/send_guard.py` now resolves market context in
+  this order:
+  1. row-level `city` / `country`
+  2. row-level `source_location`
+  3. run-scoped `data/runs/<campaign_id>/campaign_run_state.json`
+  4. global `data/campaign_run_state.json`
+  5. `data/campaign_queue.json` match by `campaign_id`
+
+- `scripts/deploy_run_to_gcloud.py` now:
+  - reads `data/campaign_queue.json` by `campaign_id` when the run folder has
+    no usable run-scoped state
+  - hydrates a minimal `data/runs/<campaign_id>/campaign_run_state.json`
+    before cloud upload
+  - builds the cloud manifest from the hydrated config, not only from the
+    pre-existing run-state file
+
+Operational effect:
+
+- queue-generated cloud deploys remain self-contained after upload to GCS
+- worker-side market resolution no longer depends on the VM also having a local
+  `campaign_queue.json` copy for older queue campaigns
+- re-deployed queue runs can recover the correct country/city timezone instead
+  of silently inheriting `UTC`
+
+Related control-panel hardening:
+
+- `src/workflow_9_5_streamlit_control_panel/ui_state.py` `_load_run_config()`
+  now also falls back to `data/campaign_queue.json` by `campaign_id` when a run
+  folder has no `campaign_run_state.json`.
+- This closes a UI recovery bug where **Ready To Deploy** could misclassify old
+  queue-generated `dry_run` campaigns as cloud-send eligible simply because the
+  run folder lacked stored config.
+- `load_ready_cloud_deploys()` now also falls back to the matching queue job's
+  `status` when a run folder lacks `campaign_run_state.json`.
+- This closes a second visibility bug where older queue-generated `gmail_api`
+  runs could be genuinely completed and cloud-deployable, but still be hidden
+  from **Ready To Deploy** only because the run folder lacked stored run-state.
+- `load_ready_cloud_deploys()` now also cross-checks cloud state before showing
+  `stale_handoff_redeploy` rows:
+  - if local run state still says `queued` but the GCS run copy already reports
+    `cloud_send_status=completed`, the row is hidden
+  - if the worker mirror already lists the campaign in `completed_campaigns`,
+    the row is hidden only when no newer live GCS `cloud_send_status.json`
+    exists for that campaign
+  - if the worker mirror currently lists the campaign as `active`, `claimed`,
+    `selected`, or `waiting_window`, the row is hidden
+  - if the worker mirror lists the campaign in `failed_campaigns`, the row is
+    treated as a recovery candidate instead of a generic stale queued run
+- This prevents already-processed cloud campaigns from reappearing in
+  **Ready To Deploy** just because local run-scoped cloud-send JSON was stale.
+- `load_delivery_ops_snapshot()` now follows the same cloud-first reconciliation
+  rule for KPI dashboard counters:
+  - local run folders still contribute deploy/send summaries
+  - but stale local `cloud_send_status=queued` is overridden by:
+    1. GCS `runs/<campaign_id>/cloud_send_status.json`
+    2. worker mirror `completed_campaigns` / `failed_campaigns`
+  - worker `completed_campaigns` only wins when there is no newer live GCS
+    `cloud_send_status.json` for that campaign
+- This prevents `Queued in Cloud` and related counters from showing inflated
+  values after dry-run cleanup or after cloud worker has already processed older
+  manifests while local run JSON remains stale.
+- KPI Dashboard `Send Ops Snapshot` now explicitly captions that cloud queue
+  counters are reconciled against live GCS / worker state, so operators can
+  distinguish them from purely local run-folder summaries.
+- `scripts/cloud_send_worker.py` now clears stale `last_wait_campaign_id` /
+  `last_wait_due_at` whenever the queue is empty or no actionable manifests are
+  present, so worker state mirrors no longer keep showing an old waiting-window
+  campaign after invalid manifests have been removed.
+- `src/workflow_9_5_streamlit_control_panel/ui_views.py` now applies a short
+  auto-refresh pause after `Ready To Deploy` table selection changes:
+  - selecting rows in `st.data_editor` stores the current selection signature in
+    `st.session_state`
+  - queue-panel fragment auto-refresh is suspended for a few seconds after the
+  selection changes
+  - purpose: reduce the “screen goes pale / temporarily unclickable” feeling
+    while operators are ticking deploy rows during frequent Streamlit reruns
+- Queue jobs table time display in `ui_views.py` now formats `started` /
+  `finished` timestamps into the operator machine's local timezone instead of
+  showing raw UTC queue-store strings.
+- `Ready To Deploy` now explicitly warns that some `gmail_api` runs may already
+  have local `cloud_deploy_status.json` because Workflow 9 can auto-trigger
+  cloud handoff on completion:
+  - trigger conditions live in `campaign_runner._should_auto_deploy()`
+  - `send_mode` must be live (`gmail_api` / non-`dry_run`)
+  - run must finish at `campaign_status`
+  - `final_send_queue.csv` must exist
+  - consequence: an operator can truthfully remember clicking only a small
+    number of manual Deploy actions while local run folders still show many
+    `cloud_deploy_status=completed` records from `auto_on_complete`
+- Per-run cloud handoff control added:
+  - `CampaignConfig` now carries `auto_cloud_deploy`
+  - Streamlit Campaign Configuration shows `Auto Upload To Cloud After Completion`
+  - `dry_run` forces this off in the UI
+  - Single Run and queued Multiple Run jobs now persist the chosen value
+  - queue duplicate detection now treats `(send_mode, run_until, auto_cloud_deploy)`
+    as part of the operational uniqueness key
+  - Workflow 9 auto handoff no longer depends only on the global env flag:
+    per-run `auto_cloud_deploy=False` keeps a live run local until the operator
+    manually uses **Ready To Deploy**
+- Queue panel visibility upgrade:
+  - the jobs table now shows `cloud_handoff`
+  - values are:
+    - `auto`    — queue job explicitly set to auto cloud handoff
+    - `manual`  — queue job explicitly requires manual deploy
+    - `legacy`  — older job created before the per-run handoff flag existed
+    - `disabled` — `dry_run`, so cloud handoff is off
+- KPI dashboard now includes **Cloud Deploy History / Reconciliation**:
+  - data source merges:
+    - local run-folder `cloud_deploy_status.json`
+    - local / GCS `cloud_send_status.json`
+    - queue metadata (`campaign_queue.json`)
+    - worker mirror `cloud_send_worker_state.json`
+  - each row separates:
+    - `Cloud Handoff` (auto/manual/legacy)
+    - `Deploy Status`
+    - `Cloud Send`
+    - `Reconciliation`
+    - `Note`
+    - `Emails In Final Queue` (campaign-level email count, distinct from the
+      KPI card `Queued in Cloud`, which is a live cloud campaign count)
+  - reconciliation labels currently include:
+    - `manual_deploy`
+    - `auto_on_complete`
+    - `failed_recovery`
+    - `currently_waiting`
+    - `historical_inconsistent`
+  - cloud-send wording in the UI is now intentionally human-readable:
+    - `queued in cloud manifest backlog`
+    - `claimed by cloud worker, waiting for send window`
+    - `sending`
+    - `completed`
+  - the reconciliation section also shows this lifecycle explicitly so operators
+    can understand that `claimed / waiting` is a later state than `queued`
+  - purpose: stop operators from inferring cloud handoff history indirectly from
+    stale local files or memory of which Deploy button was clicked
+- Multi-run queue panel operator-clarity pass:
+  - `ui_views._describe_queue_runner_phase()` now converts raw queue/scheduler
+    state into plain-language phases such as:
+    - `Queue paused`
+    - `Runner alive, waiting to claim next job`
+    - `Job claimed, pipeline starting`
+    - `Running workflow steps`
+    - `Runner idle`
+  - the queue panel now shows an explicit lifecycle caption:
+    - `Start Runner -> queued in scheduler -> claimed job / waiting for first workflow step -> running workflow step -> completed`
+  - when a queue job has been claimed but `campaign_runner_logs.csv` has not yet
+    written the first step, the progress area no longer looks empty; it shows a
+    small placeholder progress bar plus explanatory text that this short gap is
+    normal
+  - when the runner process is alive and pending jobs exist but no job is yet
+    marked `running`, the panel now says the runner is alive and waiting to
+    claim the next pending job instead of looking like nothing happened after
+    the operator clicked **Start Runner**
+- Multi-run queue add compatibility fix:
+  - `ui_views._add_jobs_to_queue()` now inspects the imported
+    `queue_store.add_job()` signature before passing `auto_cloud_deploy`
+  - purpose: avoid `TypeError: add_job() got an unexpected keyword argument
+    'auto_cloud_deploy'` when Streamlit is running against an older in-memory
+    queue-store implementation or mixed code state during iterative local
+    development
+  - if the queue-store function exposes `auto_cloud_deploy`, the value is
+    passed normally; otherwise the UI falls back gracefully and still creates
+    the queued jobs
+  - additionally, when the imported `add_job()` does not expose
+    `auto_cloud_deploy`, the UI now immediately calls `update_job()` to persist
+    the operator's chosen auto/manual cloud handoff setting onto the queued job
+  - motivation: without this second step, operators could truthfully tick
+    **Auto Upload To Cloud After Completion** and still end up with queue jobs
+    missing the field entirely, causing completed gmail_api runs to show
+    `cloud_deploy_status=not_enabled`
+- Multi-run Windows queue-write hardening:
+  - `queue_store._save_raw()` now retries atomic replacement of
+    `data/campaign_queue.json` for a short window before failing
+  - motivation: on Windows, Streamlit and the detached queue runner can briefly
+    contend for the queue file; `Path(tmp).replace(campaign_queue.json)` may
+    raise `PermissionError: [WinError 5]`
+  - without the retry, clicking **Start Runner** could appear to do nothing
+    because the scheduler process started, hit the queue-file race while moving
+    the first job to `running`, then exited immediately
+- Cloud-send suppress-window investigation (Brazil):
+  - Investigated why `sao-paulo_20260324_063452_3b0e` reached the cloud send
+    window but still ended with `sent=0, deferred=2`
+  - VM-side `data/crm/send_logs.csv` showed both records were deferred with
+    `deferred_same_company_domain_in_suppress_window`
+  - Root cause: `workflow_7_email_sending.send_guard._root_domain()` used the
+    last two labels only, so unrelated Brazilian domains like
+    `incasolar.com.br` and `solargroup.com.br` both collapsed to `com.br`
+  - Fixed `_root_domain()` to preserve the company label for known multi-part
+    public suffixes such as `com.br`, `co.uk`, and `com.au`
+  - Added regression test `tests/test_send_guard_domains.py` so distinct
+    `.com.br` companies no longer suppress each other as if they were the same
+    domain
