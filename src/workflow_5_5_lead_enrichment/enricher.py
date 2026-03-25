@@ -224,6 +224,7 @@ ENRICHED_FIELDS = [
     "kp_name", "kp_title", "kp_email", "enrichment_source",
     # website-scraped contact info (populated when enrichment_source == "website")
     "site_phone",
+    "whatsapp_phone",
     # contact channel labels — computed post-enrichment
     "email_sendable", "contact_channel", "alt_outreach_possible",
     # contact trust / skip signals — computed post-enrichment
@@ -551,7 +552,8 @@ _site_contact_cache: dict[str, dict] | None = None   # place_id/website → cont
 
 def _load_site_contacts() -> dict[str, dict]:
     """
-    Load site_emails and site_phones from company_text.json (written by Workflow 3).
+    Load site_emails, site_phones, and whatsapp_phones from company_text.json
+    (written by Workflow 3).
     Returns lookup dict keyed by both place_id and normalised website domain.
     """
     global _site_contact_cache
@@ -571,9 +573,14 @@ def _load_site_contacts() -> dict[str, dict]:
     for r in records:
         emails = r.get("site_emails") or []
         phones = r.get("site_phones") or []
-        if not emails and not phones:
+        whatsapp_phones = r.get("whatsapp_phones") or []
+        if not emails and not phones and not whatsapp_phones:
             continue
-        entry = {"site_emails": emails, "site_phones": phones}
+        entry = {
+            "site_emails": emails,
+            "site_phones": phones,
+            "whatsapp_phones": whatsapp_phones,
+        }
         if r.get("place_id"):
             _site_contact_cache[r["place_id"]] = entry
         domain = _domain(r.get("website", ""))
@@ -600,6 +607,7 @@ def _query_website_contact(lead: dict) -> dict | None:
 
     emails = entry.get("site_emails", [])
     phones = entry.get("site_phones", [])
+    whatsapp_phones = entry.get("whatsapp_phones", [])
 
     if not emails:
         return None
@@ -612,6 +620,7 @@ def _query_website_contact(lead: dict) -> dict | None:
         "kp_title": f"Contact (website){phone_note}",
         "kp_email": email,
         "site_phones": phones,
+        "whatsapp_phones": whatsapp_phones,
     }
 
 
@@ -631,6 +640,7 @@ def _query_website_contact_multi(lead: dict, max_results: int = 3) -> list[dict]
 
     emails = entry.get("site_emails", [])
     phones = entry.get("site_phones", [])
+    whatsapp_phones = entry.get("whatsapp_phones", [])
 
     results: list[dict] = []
     for i, email in enumerate(emails[:max_results]):
@@ -642,6 +652,8 @@ def _query_website_contact_multi(lead: dict, max_results: int = 3) -> list[dict]
         }
         if i == 0 and phones:
             kp["site_phones"] = phones
+        if i == 0 and whatsapp_phones:
+            kp["whatsapp_phones"] = whatsapp_phones
         results.append(kp)
     return results
 
@@ -691,7 +703,28 @@ _MESSAGING_REDIRECT_DOMAINS: frozenset[str] = frozenset({
 })
 
 
-def _contact_labels(kp_email: str, site_phone: str, website: str) -> dict:
+def _derive_whatsapp_phone(
+    country: str,
+    site_phone: str,
+    website: str,
+    whatsapp_phones: list[str] | None = None,
+) -> str:
+    """
+    Preserve an explicit WhatsApp number when present.
+    For any market, if Workflow 3 already detected a WhatsApp signal and carried
+    a phone number through, preserve that number as a WhatsApp-capable manual
+    contact channel.
+    """
+    whatsapp_phones = whatsapp_phones or []
+    if whatsapp_phones:
+        return whatsapp_phones[0]
+    web_domain = _domain(website)
+    if web_domain in _MESSAGING_REDIRECT_DOMAINS and site_phone:
+        return site_phone
+    return ""
+
+
+def _contact_labels(kp_email: str, site_phone: str, whatsapp_phone: str, website: str) -> dict:
     """
     Derive contact-channel metadata after enrichment is complete.
 
@@ -702,11 +735,14 @@ def _contact_labels(kp_email: str, site_phone: str, website: str) -> dict:
     """
     has_email    = bool(kp_email and "@" in kp_email)
     has_phone    = bool(site_phone)
+    has_whatsapp = bool(whatsapp_phone)
     web_domain   = _domain(website)
     is_messaging = web_domain in _MESSAGING_REDIRECT_DOMAINS
 
     if has_email:
         channel = "email"
+    elif has_whatsapp:
+        channel = "whatsapp"
     elif has_phone:
         channel = "phone"
     elif is_messaging:
@@ -717,7 +753,7 @@ def _contact_labels(kp_email: str, site_phone: str, website: str) -> dict:
     return {
         "email_sendable":        "true"  if has_email else "false",
         "contact_channel":       channel,
-        "alt_outreach_possible": "true"  if (not has_email and (has_phone or is_messaging)) else "false",
+        "alt_outreach_possible": "true"  if (not has_email and (has_phone or has_whatsapp or is_messaging)) else "false",
     }
 
 
@@ -784,8 +820,15 @@ def enrich_lead_multi(lead: dict, index: int = 0, max_contacts: int = 3) -> list
     Slot-filling order: Apollo → Hunter → website → mock (no keys) → guessed emails.
     """
     domain = _domain(lead.get("website", ""))
-    base   = {**lead, "kp_name": "", "kp_title": "", "kp_email": "",
-              "enrichment_source": "none", "site_phone": lead.get("site_phone", "")}
+    base   = {
+        **lead,
+        "kp_name": "",
+        "kp_title": "",
+        "kp_email": "",
+        "enrichment_source": "none",
+        "site_phone": lead.get("site_phone", ""),
+        "whatsapp_phone": lead.get("whatsapp_phone", ""),
+    }
 
     if not domain:
         return [_make_contact_row({**base}, rank=1)]
@@ -853,13 +896,17 @@ def enrich_lead_multi(lead: dict, index: int = 0, max_contacts: int = 3) -> list
         site_kps   = _query_website_contact_multi(lead, max_results=remaining)
         seen       = {c[0]["kp_email"] for c in contacts}
         site_phone = ""
+        whatsapp_phone = ""
         added = 0
         for kp in site_kps:
             if len(contacts) >= max_contacts:
                 break
             phones = kp.pop("site_phones", [])
+            whatsapp_phones = kp.pop("whatsapp_phones", [])
             if phones and not site_phone:
                 site_phone = phones[0]
+            if whatsapp_phones and not whatsapp_phone:
+                whatsapp_phone = whatsapp_phones[0]
             if kp["kp_email"] not in seen:
                 contacts.append((kp, "website"))
                 seen.add(kp["kp_email"])
@@ -868,6 +915,14 @@ def enrich_lead_multi(lead: dict, index: int = 0, max_contacts: int = 3) -> list
             _inc("website_ok")
         if site_phone and not base.get("site_phone"):
             base["site_phone"] = site_phone
+        if not whatsapp_phone:
+            whatsapp_phone = _derive_whatsapp_phone(
+                country=lead.get("country", ""),
+                site_phone=site_phone,
+                website=lead.get("website", ""),
+            )
+        if whatsapp_phone and not base.get("whatsapp_phone"):
+            base["whatsapp_phone"] = whatsapp_phone
 
     # Step 4 — Mock (no API keys → smoke-test mode)
     if not contacts and not APOLLO_API_KEY and not HUNTER_API_KEY:
@@ -945,9 +1000,18 @@ def enrich_lead(lead: dict, index: int = 0) -> dict:
     kp = _query_website_contact(lead)
     if kp:
         phones = kp.pop("site_phones", [])
+        whatsapp_phones = kp.pop("whatsapp_phones", [])
         enriched = {**result, **kp, "enrichment_source": "website"}
         if phones:
             enriched["site_phone"] = phones[0]
+        whatsapp_phone = _derive_whatsapp_phone(
+            country=lead.get("country", ""),
+            site_phone=enriched.get("site_phone", ""),
+            website=lead.get("website", ""),
+            whatsapp_phones=whatsapp_phones,
+        )
+        if whatsapp_phone:
+            enriched["whatsapp_phone"] = whatsapp_phone
         return enriched
 
     # Step 4 — Mock (no keys configured → smoke test mode)
@@ -1068,9 +1132,10 @@ def run(limit: int = 0, paths: RunPaths | None = None) -> list[dict]:
 
             # Compute contact-channel labels now that enrichment is finalised
             contact.update(_contact_labels(
-                kp_email   = contact.get("kp_email",   ""),
-                site_phone = contact.get("site_phone", ""),
-                website    = contact.get("website",    ""),
+                kp_email       = contact.get("kp_email", ""),
+                site_phone     = contact.get("site_phone", ""),
+                whatsapp_phone = contact.get("whatsapp_phone", ""),
+                website        = contact.get("website", ""),
             ))
 
             # Domain-mismatch contacts are not sendable regardless of email presence

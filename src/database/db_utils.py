@@ -128,19 +128,31 @@ def insert_contact(conn: sqlite3.Connection, record: dict) -> int:
     is_generic_int = (
         1 if str(is_generic_raw).lower() in ("true", "1") else 0
     )
+    alt_outreach_raw = record.get("alt_outreach_possible", 0)
+    alt_outreach_int = (
+        1 if str(alt_outreach_raw).lower() in ("true", "1") else 0
+    )
+    site_phone = record.get("site_phone", "") or ""
+    whatsapp_phone = record.get("whatsapp_phone", "") or ""
+    best_phone = record.get("phone", "") or site_phone or whatsapp_phone
     cursor = conn.execute(
         """
         INSERT INTO contacts
             (company_id, contact_name, contact_title, email, phone,
+             site_phone, whatsapp_phone, contact_channel, alt_outreach_possible,
              source, confidence, contact_rank, is_generic_mailbox, created_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """,
         (
             record.get("company_id"),
             record.get("contact_name", "") or record.get("kp_name", ""),
             record.get("contact_title", "") or record.get("kp_title", ""),
             record.get("email", "") or record.get("kp_email", ""),
-            record.get("phone", ""),
+            best_phone,
+            site_phone,
+            whatsapp_phone,
+            record.get("contact_channel", ""),
+            alt_outreach_int,
             record.get("source", "") or record.get("enrichment_source", ""),
             record.get("confidence"),
             int(record.get("contact_rank") or 1),

@@ -109,6 +109,10 @@ CREATE TABLE IF NOT EXISTS contacts (
     contact_title      TEXT,
     email              TEXT,
     phone              TEXT,
+    site_phone         TEXT,
+    whatsapp_phone     TEXT,
+    contact_channel    TEXT,
+    alt_outreach_possible INTEGER NOT NULL DEFAULT 0,
     source             TEXT,
     confidence         REAL,
     contact_rank       INTEGER NOT NULL DEFAULT 1,
@@ -337,6 +341,7 @@ def test_group_f_website_multi():
     site_entry = {
         "site_emails": ["info@testsolar.com", "contact@testsolar.com"],
         "site_phones": ["+1-604-555-0101"],
+        "whatsapp_phones": ["+16045550101"],
     }
 
     with (
@@ -491,7 +496,7 @@ def test_group_j_leads_csv_backward_compat():
         rows = []
         for rank, kp in enumerate(kps, start=1):
             row = {**lead, **kp, "enrichment_source": "apollo",
-                   "site_phone": "", "email_sendable": "true",
+                   "site_phone": "", "whatsapp_phone": "", "email_sendable": "true",
                    "contact_channel": "email", "alt_outreach_possible": "false",
                    "contact_trust": "trusted", "skip_reason": ""}
             rows.append(_make_contact_row(row, rank=rank))
@@ -546,10 +551,14 @@ def test_group_j_leads_csv_backward_compat():
 # ---------------------------------------------------------------------------
 
 def test_group_k_db_migration():
-    print("\n[Group K] DB migration: contacts table gets contact_rank and is_generic_mailbox")
+    print("\n[Group K] DB migration: contacts table gets contact / channel metadata")
 
     # Check migration list content
     col_names = [col for col, _ in _MIGRATIONS_CONTACTS]
+    _assert("site_phone" in col_names, "_MIGRATIONS_CONTACTS includes site_phone")
+    _assert("whatsapp_phone" in col_names, "_MIGRATIONS_CONTACTS includes whatsapp_phone")
+    _assert("contact_channel" in col_names, "_MIGRATIONS_CONTACTS includes contact_channel")
+    _assert("alt_outreach_possible" in col_names, "_MIGRATIONS_CONTACTS includes alt_outreach_possible")
     _assert("contact_rank"       in col_names, "_MIGRATIONS_CONTACTS includes contact_rank")
     _assert("is_generic_mailbox" in col_names, "_MIGRATIONS_CONTACTS includes is_generic_mailbox")
 
@@ -557,6 +566,10 @@ def test_group_k_db_migration():
     conn = _in_memory_db()
     try:
         cols = {row[1] for row in conn.execute("PRAGMA table_info(contacts)").fetchall()}
+        _assert("site_phone" in cols, "site_phone column in contacts table")
+        _assert("whatsapp_phone" in cols, "whatsapp_phone column in contacts table")
+        _assert("contact_channel" in cols, "contact_channel column in contacts table")
+        _assert("alt_outreach_possible" in cols, "alt_outreach_possible column in contacts table")
         _assert("contact_rank"       in cols, "contact_rank column in contacts table")
         _assert("is_generic_mailbox" in cols, "is_generic_mailbox column in contacts table")
     finally:
@@ -575,12 +588,21 @@ def test_group_k_db_migration():
             "kp_name":           "Jane Doe",
             "kp_email":          "jane@migtest.com",
             "enrichment_source": "apollo",
+            "site_phone":        "(11) 3090-5976",
+            "whatsapp_phone":    "(11) 97071-3044",
+            "contact_channel":   "email",
+            "alt_outreach_possible": "true",
             "contact_rank":      2,
             "is_generic_mailbox": "false",
         })
         row = conn2.execute(
-            "SELECT contact_rank, is_generic_mailbox FROM contacts WHERE id = ?", (cid,)
+            "SELECT site_phone, whatsapp_phone, contact_channel, alt_outreach_possible, contact_rank, is_generic_mailbox FROM contacts WHERE id = ?",
+            (cid,),
         ).fetchone()
+        _assert(row["site_phone"] == "(11) 3090-5976", "site_phone stored correctly")
+        _assert(row["whatsapp_phone"] == "(11) 97071-3044", "whatsapp_phone stored correctly")
+        _assert(row["contact_channel"] == "email", "contact_channel stored correctly")
+        _assert(row["alt_outreach_possible"] == 1, "alt_outreach_possible stored correctly")
         _assert(row["contact_rank"]       == 2, "contact_rank=2 stored correctly")
         _assert(row["is_generic_mailbox"] == 0, "is_generic_mailbox=0 stored correctly")
 
@@ -624,7 +646,7 @@ def test_group_l_csv_sync_multi_contact():
             "enrichment_source": "apollo", "contact_rank": "1", "is_generic_mailbox": "false",
             "email_sendable": "true", "contact_channel": "email",
             "alt_outreach_possible": "false", "contact_trust": "trusted", "skip_reason": "",
-            "site_phone": "", "company_type": "", "market_focus": "",
+            "site_phone": "", "whatsapp_phone": "", "company_type": "", "market_focus": "",
             "services_detected": "", "confidence_score": "", "classification_method": "",
             "lead_score": "", "score_breakdown": "", "target_tier": "", "kp_email": f"alice@{c['website'].split('//')[1]}",
         })
@@ -634,7 +656,7 @@ def test_group_l_csv_sync_multi_contact():
             "enrichment_source": "guessed", "contact_rank": "2", "is_generic_mailbox": "true",
             "email_sendable": "true", "contact_channel": "email",
             "alt_outreach_possible": "false", "contact_trust": "trusted", "skip_reason": "",
-            "site_phone": "", "company_type": "", "market_focus": "",
+            "site_phone": "", "whatsapp_phone": "", "company_type": "", "market_focus": "",
             "services_detected": "", "confidence_score": "", "classification_method": "",
             "lead_score": "", "score_breakdown": "", "target_tier": "",
         })

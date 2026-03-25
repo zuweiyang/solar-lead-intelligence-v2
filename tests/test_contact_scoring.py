@@ -573,7 +573,7 @@ class TestPipelinePersistence:
             "lead_score": "70", "score_breakdown": "", "target_tier": "A",
             "kp_name": "Jane Smith", "kp_title": "Procurement Manager",
             "kp_email": "jane@acme.com", "enrichment_source": "apollo",
-            "site_phone": "", "email_sendable": "true",
+            "site_phone": "", "whatsapp_phone": "", "email_sendable": "true",
             "contact_channel": "email", "alt_outreach_possible": "false",
             "contact_trust": "trusted", "skip_reason": "",
             "contact_rank": "1", "is_generic_mailbox": "false",

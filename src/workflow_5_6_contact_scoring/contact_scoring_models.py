@@ -28,6 +28,7 @@ SCORED_CONTACTS_FIELDS: list[str] = [
     # ── Contact info ─────────────────────────────────────────────────────────
     "kp_name", "kp_title", "kp_email", "enrichment_source",
     "site_phone",
+    "whatsapp_phone",
     "email_sendable", "contact_channel", "alt_outreach_possible",
     "contact_trust", "skip_reason",
     # ── P1-2A rank / generic flag ─────────────────────────────────────────────
@@ -84,6 +85,7 @@ class ScoredContact:
     kp_email:                str = ""
     enrichment_source:       str = ""
     site_phone:              str = ""
+    whatsapp_phone:          str = ""
     email_sendable:          str = ""
     contact_channel:         str = ""
     alt_outreach_possible:   str = ""

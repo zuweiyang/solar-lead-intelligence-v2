@@ -51,6 +51,10 @@ CREATE TABLE IF NOT EXISTS contacts (
     contact_title TEXT,
     email         TEXT,
     phone         TEXT,
+    site_phone    TEXT,
+    whatsapp_phone TEXT,
+    contact_channel TEXT,
+    alt_outreach_possible INTEGER NOT NULL DEFAULT 0,
     source        TEXT,
     confidence    REAL,
     created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
@@ -211,6 +215,10 @@ _MIGRATIONS_CAMPAIGN_BREAKERS: list[tuple[str, str]] = []  # all columns in init
 
 # Migration: P1-2A multi-contact enrichment columns (for databases that already exist)
 _MIGRATIONS_CONTACTS: list[tuple[str, str]] = [
+    ("site_phone",                         "TEXT"),
+    ("whatsapp_phone",                     "TEXT"),
+    ("contact_channel",                    "TEXT"),
+    ("alt_outreach_possible",              "INTEGER NOT NULL DEFAULT 0"),
     ("contact_rank",                       "INTEGER NOT NULL DEFAULT 1"),
     ("is_generic_mailbox",                 "INTEGER NOT NULL DEFAULT 0"),
     # P1-2B — contact scoring fields

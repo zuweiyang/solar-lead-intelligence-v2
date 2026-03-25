@@ -35,12 +35,27 @@ _EMAIL_RE = re.compile(
 )
 
 # North American phone — MUST have at least one separator (-, ., space, parens)
-# Rejects bare 10-digit number strings embedded in JS/CSS
-_PHONE_RE = re.compile(
-    r"""(?:(?:\+?1[\s\-.])\(?\d{3}\)?[\s\-.]\d{3}[\s\-.]\d{4}"""   # +1 xxx xxx xxxx
-    r"""|(?:\(\d{3}\)[\s\-.]\d{3}[\s\-.]\d{4})"""                   # (xxx) xxx-xxxx
-    r"""|\b\d{3}[\-\.]\d{3}[\-\.]\d{4}\b)""",                       # xxx-xxx-xxxx
+# Rejects bare 10-digit number strings embedded in JS/CSS.
+_NA_PHONE_RE = re.compile(
+    r"""(?:(?:\+?1[\s\-.])\(?\d{3}\)?[\s\-.]\d{3}[\s\-.]\d{4}"""
+    r"""|(?:\(\d{3}\)[\s\-.]\d{3}[\s\-.]\d{4})"""
+    r"""|\b\d{3}[\-\.]\d{3}[\-\.]\d{4}\b)""",
     re.ASCII,
+)
+
+# Brazil phone formats such as:
+#   +55 11 97071-3044
+#   (11) 97071-3044
+#   11 97071-3044
+#   (11) 3090-5976
+_BRAZIL_PHONE_RE = re.compile(
+    r"""(?:(?:\+?55[\s\-.]?)?(?:\(?\d{2}\)?[\s\-.]?)(?:9?\d{4})[\s\-.]?\d{4})""",
+    re.ASCII,
+)
+
+_WHATSAPP_URL_RE = re.compile(
+    r"""(?:wa\.me/|api\.whatsapp\.com/send\?phone=|web\.whatsapp\.com/send\?phone=)(\d{10,15})""",
+    re.IGNORECASE,
 )
 
 # Obvious placeholder numbers to reject
@@ -70,16 +85,18 @@ def _extract_text(html: str) -> str:
 # Contact extraction — runs on RAW HTML (before tag removal)
 # ---------------------------------------------------------------------------
 
-def _extract_contacts(pages: dict[str, str]) -> tuple[list[str], list[str]]:
+def _extract_contacts(pages: dict[str, str]) -> tuple[list[str], list[str], list[str]]:
     """
     Scan all pages for real email addresses and phone numbers.
 
     Returns:
         site_emails — deduplicated list, most likely business emails first
         site_phones — deduplicated list
+        whatsapp_phones — deduplicated list parsed from WhatsApp links / hints
     """
     emails_seen: dict[str, int] = {}   # email → occurrence count
     phones_seen: list[str] = []
+    whatsapp_seen: list[str] = []
 
     for html in pages.values():
         # --- emails: check <a href="mailto:"> first (most reliable) ---
@@ -90,6 +107,11 @@ def _extract_contacts(pages: dict[str, str]) -> tuple[list[str], list[str]]:
                 addr = href[7:].split("?")[0].strip().lower()
                 if addr and "@" in addr:
                     emails_seen[addr] = emails_seen.get(addr, 0) + 2  # weight higher
+            for match in _WHATSAPP_URL_RE.finditer(href):
+                digits = match.group(1)
+                formatted = f"+{digits}"
+                if formatted not in whatsapp_seen:
+                    whatsapp_seen.append(formatted)
 
         # --- emails: regex scan of full HTML text ---
         for match in _EMAIL_RE.finditer(html):
@@ -104,25 +126,39 @@ def _extract_contacts(pages: dict[str, str]) -> tuple[list[str], list[str]]:
             emails_seen[addr] = emails_seen.get(addr, 0) + 1
 
         # --- phones ---
-        for match in _PHONE_RE.finditer(html):
-            digits = re.sub(r"\D", "", match.group())
-            # North American: 10 digits or 11 starting with 1
-            if len(digits) == 11 and digits.startswith("1"):
-                digits = digits[1:]
-            if len(digits) != 10:
-                continue
-            if _FAKE_PHONE_PATTERNS.match(digits):
-                continue
-            formatted = match.group().strip()
-            if formatted not in phones_seen:
-                phones_seen.append(formatted)
+        for phone_re in (_NA_PHONE_RE, _BRAZIL_PHONE_RE):
+            for match in phone_re.finditer(html):
+                digits = re.sub(r"\D", "", match.group())
+                # North American normalization.
+                if phone_re is _NA_PHONE_RE:
+                    if len(digits) == 11 and digits.startswith("1"):
+                        digits = digits[1:]
+                    if len(digits) != 10:
+                        continue
+                # Brazil normalization.
+                else:
+                    if len(digits) == 13 and digits.startswith("55"):
+                        digits = digits[2:]
+                    if len(digits) not in (10, 11):
+                        continue
+                if _FAKE_PHONE_PATTERNS.match(digits):
+                    continue
+                formatted = match.group().strip()
+                if formatted not in phones_seen:
+                    phones_seen.append(formatted)
+
+        if "whatsapp" in html.lower() and phones_seen:
+            first_phone = phones_seen[0]
+            if first_phone not in whatsapp_seen:
+                whatsapp_seen.append(first_phone)
 
     # Sort emails: mailto-weighted first, then by frequency
     sorted_emails = sorted(emails_seen, key=lambda e: -emails_seen[e])
     # Deduplicate phones (keep first 3)
     unique_phones = list(dict.fromkeys(phones_seen))[:3]
+    unique_whatsapp = list(dict.fromkeys(whatsapp_seen))[:3]
 
-    return sorted_emails[:5], unique_phones
+    return sorted_emails[:5], unique_phones, unique_whatsapp
 
 
 # ---------------------------------------------------------------------------
@@ -139,7 +175,7 @@ def extract_company_text(record: dict) -> dict:
     pages: dict[str, str] = pages_raw if isinstance(pages_raw, dict) else {}
 
     # Extract contacts from raw HTML BEFORE stripping tags
-    site_emails, site_phones = _extract_contacts(pages)
+    site_emails, site_phones, whatsapp_phones = _extract_contacts(pages)
 
     # home page first, then remaining pages in insertion order
     ordered = ["home"] + [k for k in pages if k != "home"]
@@ -170,6 +206,7 @@ def extract_company_text(record: dict) -> dict:
         "company_text": "\n\n".join(parts),
         "site_emails":  site_emails,
         "site_phones":  site_phones,
+        "whatsapp_phones": whatsapp_phones,
     }
 
 

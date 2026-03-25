@@ -57,6 +57,16 @@ Central SQLite database that becomes the Single Source of Truth for all pipeline
 
 **db_utils.py** — CRUD helpers: `insert_company()`, `get_company_by_place_id()`, `insert_contact()`, `insert_email()`, `log_email_send()`, `log_engagement_event()`. All accept an open connection and return the row id.
 
+**Contacts table enrichment updates (2026-03-25):**
+- `contacts` now stores additional outreach-channel fields:
+  - `site_phone`
+  - `whatsapp_phone`
+  - `contact_channel`
+  - `alt_outreach_possible`
+- `db_schema.py` migration list (`_MIGRATIONS_CONTACTS`) adds these columns for existing SQLite databases.
+- `db_utils.insert_contact()` now persists website phone / WhatsApp phone and channel metadata, with `phone` falling back to the best available website/WhatsApp number when no direct contact phone exists.
+- `csv_sync.sync_enriched_contacts()` does not need special-case logic; once `insert_contact()` understands these fields, CSV sync imports them into SQLite automatically.
+
 **csv_sync.py** — `sync_all(conn)` imports existing CSV files in dependency order: raw_leads → enriched_leads → generated_emails → send_logs → engagement_logs → followup_logs. Each function is safe to re-run (deduplication guards).
 
 **dashboard.py** — Streamlit UI with three sections:
@@ -133,6 +143,21 @@ place_id, source_keyword, source_location
 **Steps:**
 1. `website_crawler.py` — crawls homepage + `/about`, `/services`, `/projects`, `/products` (max 5 pages/site, 1 s delay between domains, dedup by root domain via `tldextract`)
 2. `content_extractor.py` — strips scripts/styles/nav with BeautifulSoup, returns clean text ≤ 5000 chars per company
+
+**Website contact extraction updates (2026-03-25):**
+- `content_extractor.py` now extracts:
+  - `site_emails`
+  - `site_phones`
+  - `whatsapp_phones`
+- Phone extraction now supports Brazil-style numbers such as:
+  - `+55 11 97071-3044`
+  - `(11) 97071-3044`
+  - `(11) 3090-5976`
+- WhatsApp numbers are detected from:
+  - `wa.me/...`
+  - `api.whatsapp.com/send?phone=...`
+  - `web.whatsapp.com/send?phone=...`
+- This is now a global rule, not a Brazil-only rule: if a site clearly exposes WhatsApp usage and a site phone is present, enrichment can preserve that number as a WhatsApp-capable contact channel for later manual outreach.
 
 ---
 
@@ -320,13 +345,31 @@ Slots are filled in order; duplicate emails are deduplicated across sources.
 | `contact_rank` | int | 1=primary, 2=backup, 3=tertiary |
 | `is_generic_mailbox` | str | `"true"` when local-part is `info`, `sales`, `contact`, `admin`, etc. |
 
+#### Additional outreach-channel fields
+
+Both `enriched_leads.csv` and `enriched_contacts.csv` now preserve website-derived contact channels:
+- `site_phone`
+- `whatsapp_phone`
+- `contact_channel`
+- `alt_outreach_possible`
+
+Global WhatsApp behavior:
+- if Workflow 3 extracts an explicit WhatsApp number, enrichment stores it in `whatsapp_phone`
+- if a website clearly exposes WhatsApp usage and only a site phone is available, enrichment may reuse that phone as a WhatsApp-capable channel for later manual outreach
+- `contact_channel` prefers `email`, then `whatsapp`, then `phone`, then messaging-site fallback
+- `alt_outreach_possible=true` when no email is available but a non-email channel (WhatsApp/phone/messaging) exists
+
 #### Generic mailbox detection
 
 `_is_generic_mailbox(email)` checks the local-part against `_GENERIC_LOCAL_PARTS` (frozenset of ~30 alias patterns). Generic contacts are still included but ranked lower and flagged for downstream routing.
 
 #### DB persistence
 
-`contacts` table gains two columns via migration (`_MIGRATIONS_CONTACTS`):
+`contacts` table gains channel/contact metadata via migration (`_MIGRATIONS_CONTACTS`):
+- `site_phone TEXT`
+- `whatsapp_phone TEXT`
+- `contact_channel TEXT`
+- `alt_outreach_possible INTEGER NOT NULL DEFAULT 0`
 - `contact_rank INTEGER NOT NULL DEFAULT 1`
 - `is_generic_mailbox INTEGER NOT NULL DEFAULT 0`
 
