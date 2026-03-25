@@ -77,6 +77,7 @@ def _job_to_config(job: dict) -> CampaignConfig:
         crawl_limit      = int(job.get("crawl_limit") or 0),
         enrich_limit     = int(job.get("enrich_limit") or 0),
         send_mode        = job.get("send_mode", "dry_run"),
+        auto_cloud_deploy = job.get("auto_cloud_deploy"),
         run_until        = job.get("run_until", "campaign_status"),
         resume           = False,
         dry_run          = job.get("send_mode", "dry_run") == "dry_run",

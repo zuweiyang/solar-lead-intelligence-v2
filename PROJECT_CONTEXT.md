@@ -3810,7 +3810,7 @@ Related control-panel hardening:
   - `ui_views.py` no longer renders `st.progress(...)` for the active queue job on every refresh
   - the queue panel now shows a compact text-only workflow-step label such as `Workflow step: 3/12 scrape`
   - intent: keep operators informed about the current pipeline stage while reducing rerender cost and the slow/white-flash feeling during queue refreshes
-- 2026-03-25: Started implementing cloud-worker send-capacity scheduling so inbox throttling becomes visible and enforceable at the worker layer instead of being implicit inside a single Workflow 7 batch.
+- 2026-03-25: Implemented and deployed cloud-worker send-capacity scheduling so inbox throttling is visible and enforceable at the worker layer instead of being implicit inside a single Workflow 7 batch.
   - new cloud settings were added in `config/settings.py`:
     - `CLOUD_SEND_INBOX_DAILY_LIMIT`
     - `CLOUD_SEND_INBOX_HOURLY_LIMIT`
@@ -3836,4 +3836,21 @@ Related control-panel hardening:
     - remaining this hour
     - live cloud emails waiting / backlog / inflight
     - next capacity slot / carryover email count
-  - status note: this send-capacity feature set is implemented in the local workspace but has **not yet been pushed or deployed to the VM** in this pass, and no local Python compile/test run was possible because the current shell session did not expose a runnable Python interpreter
+  - deployed status:
+    - GitHub / VM commit: `29c0e21` (`Add cloud send capacity scheduling and worker capacity UI`)
+    - VM updated via `bash deploy/gcp/update_vm.sh`
+    - `cloud-send-worker` restarted successfully and now exposes the new capacity fields in `data/cloud_send_worker_state.json`
+    - live worker snapshot after deployment confirmed:
+      - `inbox_daily_cap = 50`
+      - `inbox_hourly_cap = 20`
+      - `weekend_sending_enabled = false`
+      - live waiting/backlog email counters are now populated (`last_live_email_count`, `last_manifest_email_count`, `last_inflight_email_count`, `last_carryover_email_count`)
+  - local validation note: the current Windows shell still did not expose a usable Python entry point for local compile/test execution, so final validation for this pass was completed on the VM through deployment + live worker-state inspection
+- 2026-03-25: Fixed Workflow 9 auto-deploy reliability so auto-upload no longer depends on a silent detached subprocess.
+  - root cause we confirmed: `campaign_runner._trigger_cloud_deploy()` was launching `deploy_run_to_gcloud.py` via detached `subprocess.Popen(..., stdout=DEVNULL, stderr=DEVNULL)`, so startup failures left campaigns stuck at `cloud_deploy_status = pending`
+  - fix:
+    - `campaign_runner._trigger_cloud_deploy()` now calls `deploy_run(...)` synchronously inside Workflow 9
+    - auto-upload now either finishes immediately into cloud handoff, or fails visibly and lands in `cloud_deploy_status = failed`
+  - supporting consistency note:
+    - `queue_runner._job_to_config(...)` carries `auto_cloud_deploy`
+    - campaign-state config serialization keeps `auto_cloud_deploy` visible in run state

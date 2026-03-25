@@ -17,13 +17,10 @@ Usage:
 """
 from __future__ import annotations
 
-import os
-import subprocess
 import sys
 import traceback
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from typing import Any, Callable
+from typing import Callable
 
 import config.run_context as run_context
 import config.run_paths as _run_paths
@@ -83,27 +80,11 @@ def _should_auto_deploy(config: CampaignConfig, completed_steps: list[str]) -> b
 
 
 def _trigger_cloud_deploy(campaign_id: str) -> None:
-    script_path = Path(__file__).resolve().parents[2] / "scripts" / "deploy_run_to_gcloud.py"
-    if not script_path.exists():
-        print(f"[Workflow 9] Cloud deploy skipped - script not found: {script_path}")
-        return
+    from scripts.deploy_run_to_gcloud import deploy_run
 
-    cmd = [sys.executable, str(script_path), "--campaign", campaign_id]
-    popen_kwargs: dict[str, Any] = {
-        "stdout": subprocess.DEVNULL,
-        "stderr": subprocess.DEVNULL,
-        "cwd": str(Path(__file__).resolve().parents[2]),
-        "env": os.environ.copy(),
-    }
-    if os.name == "nt":
-        popen_kwargs["creationflags"] = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(
-            subprocess, "CREATE_NEW_PROCESS_GROUP", 0
-        )
-    else:
-        popen_kwargs["start_new_session"] = True
-
-    subprocess.Popen(cmd, **popen_kwargs)
-    print(f"[Workflow 9] Triggered background cloud deploy for {campaign_id}")
+    print(f"[Workflow 9] Starting synchronous cloud deploy for {campaign_id}")
+    deploy_run(campaign_id)
+    print(f"[Workflow 9] Cloud deploy completed for {campaign_id}")
 
 
 def _parse_state_timestamp(raw: str) -> datetime | None:
