@@ -5,9 +5,8 @@
 #   1. Apollo.io People Search  → KP + email (requires paid plan)
 #   2. Hunter.io Domain Search  → KP + email (fallback)
 #   3. Website contact          → real email scraped from company website (Step 3)
-#   4. Email pattern guesser    → constructs likely email from domain patterns
-#   5. Mock data                → tag: mock  (when both keys absent, for testing)
-#   6. Empty                    → tag: none  (live run, all strategies failed)
+#   4. Mock data                → tag: mock  (when both keys absent, for testing)
+#   5. Empty                    → tag: none  (live run, all strategies failed)
 #
 # NOTE: Apollo People Search (/api/v1/mixed_people/search) requires a paid plan.
 # Free plan supports /api/v1/organizations/enrich only.
@@ -776,9 +775,8 @@ def _contact_labels(kp_email: str, site_phone: str, whatsapp_phone: str, website
 
 def _guess_email(domain: str, index: int = 0, country: str = "") -> dict:
     """
-    Build the most likely contact email for a domain using common patterns.
-    Uses generic role addresses (info@, sales@) as reliable fallbacks.
-    Tagged as 'guessed' — should be verified before sending.
+    Legacy helper that constructs a guessed contact email from domain patterns.
+    New runs no longer use guessed emails for enrichment or sending.
     """
     # Role-based addresses are the most reliable guesses
     guess_locals = get_generic_guess_local_parts(country)
@@ -834,7 +832,7 @@ def enrich_lead_multi(lead: dict, index: int = 0, max_contacts: int = 3) -> list
     enrich_lead() returns).  Each contact dict contains all ENRICHED_FIELDS keys plus
     contact_rank and is_generic_mailbox.
 
-    Slot-filling order: Apollo → Hunter → website → mock (no keys) → guessed emails.
+    Slot-filling order: Apollo → Hunter → website → mock (no keys).
     """
     domain = _domain(lead.get("website", ""))
     base   = {
@@ -948,23 +946,6 @@ def enrich_lead_multi(lead: dict, index: int = 0, max_contacts: int = 3) -> list
             contacts.append((kp, "mock"))
         _inc("mock_ok")
 
-    # Step 5 — Guessed emails (live run, real strategies yielded < max_contacts)
-    remaining = max_contacts - len(contacts)
-    if remaining > 0 and (APOLLO_API_KEY or HUNTER_API_KEY):
-        if domain not in _GUESS_DOMAIN_BLOCKLIST:
-            seen = {c[0]["kp_email"] for c in contacts}
-            added = 0
-            for i in range(remaining):
-                kp = _guess_email(domain, i, lead.get("country", ""))
-                if kp["kp_email"] not in seen:
-                    contacts.append((kp, "guessed"))
-                    seen.add(kp["kp_email"])
-                    added += 1
-            if added:
-                _inc("guessed_ok")
-        else:
-            print(f"[Workflow 5.5]   Skipping guess — blocked redirect domain: {domain}")
-
     if not contacts:
         _inc("none_ok")
         return [_make_contact_row({**base}, rank=1)]
@@ -1036,14 +1017,9 @@ def enrich_lead(lead: dict, index: int = 0) -> dict:
         kp = _mock_kp(lead.get("company_name", ""), domain, index)
         return {**result, **kp, "enrichment_source": "mock"}
 
-    # Step 5 — Email pattern guesser (live run, all real strategies failed)
-    # Skip if the website domain is a redirect / messaging service — guessed
-    # addresses on these domains (e.g. sales@wa.me) are not deliverable.
-    if domain in _GUESS_DOMAIN_BLOCKLIST:
-        print(f"[Workflow 5.5]   Skipping guess — blocked redirect domain: {domain}")
-        return result
-    kp = _guess_email(domain, index, lead.get("country", ""))
-    return {**result, **kp, "enrichment_source": "guessed"}
+    # No guessed-email fallback. If Apollo / Hunter / website all fail in live mode,
+    # we return an empty contact and let downstream steps treat the lead as non-sendable.
+    return result
 
 
 # ---------------------------------------------------------------------------

@@ -4000,3 +4000,22 @@ Phone / WhatsApp extraction in Workflow 3 was tightened globally, not just for B
 - only promotes a WhatsApp fallback from phones found on the same page that contains the WhatsApp hint
 
 This is intended to reduce fake numeric noise in `site_phone` / `whatsapp_phone` across all countries, not just Brazil.
+
+2026-03-26 00:30
+
+`guessed` email fallback has now been removed from Workflow 5.5 enrichment for new runs.
+
+- previous state:
+  - Apollo → Hunter → website → guessed → none
+  - even though Workflow 6 no longer sent guessed emails, they still appeared in `enriched_contacts.csv` / `scored_contacts.csv` as candidate noise
+- new state:
+  - Apollo → Hunter → website → mock (when no API keys) → none
+  - if Apollo / Hunter / website all fail during a live run, the lead now returns with:
+    - `enrichment_source = none`
+    - empty `kp_email`
+- impact:
+  - new runs will no longer generate `info@...`, `sales@...`, `contact@...` guessed candidates at all
+  - old historical runs can still contain guessed rows in already-written CSV outputs; those are historical artifacts, not current logic
+- validation:
+  - added regression coverage in `tests/test_enrichment_resilience.py`
+  - local tests passed with `D:\solar-lead-intelligence\.venv\Scripts\python.exe`

@@ -12,6 +12,7 @@ Verifies:
 import importlib
 import sys
 import pytest
+from unittest.mock import patch
 
 
 def _fresh_enricher():
@@ -124,3 +125,38 @@ class TestEnrichmentCounters:
             "website_ok", "guessed_ok", "mock_ok", "none_ok",
         ):
             assert key in c, f"Missing counter: {key}"
+
+
+class TestNoGuessedFallback:
+    def test_single_enrich_returns_none_when_real_sources_fail(self):
+        enricher = _fresh_enricher()
+        lead = {"company_name": "Acme Solar", "website": "https://acme.com.br", "country": "Brazil"}
+
+        with patch.object(enricher, "APOLLO_API_KEY", "token"), \
+             patch.object(enricher, "HUNTER_API_KEY", "token"), \
+             patch.object(enricher, "_query_apollo", return_value=None), \
+             patch.object(enricher, "_query_hunter", return_value=None), \
+             patch.object(enricher, "_query_website_contact", return_value=None), \
+             patch.object(enricher, "RATE_LIMIT_DELAY", 0), \
+             patch.object(enricher, "HUNTER_DELAY", 0):
+            result = enricher.enrich_lead(lead, index=0)
+
+        assert result["enrichment_source"] == "none"
+        assert result["kp_email"] == ""
+
+    def test_multi_enrich_does_not_emit_guessed_contacts(self):
+        enricher = _fresh_enricher()
+        lead = {"company_name": "Acme Solar", "website": "https://acme.com.br", "country": "Brazil"}
+
+        with patch.object(enricher, "APOLLO_API_KEY", "token"), \
+             patch.object(enricher, "HUNTER_API_KEY", "token"), \
+             patch.object(enricher, "_apollo_people_search_multi", return_value=[]), \
+             patch.object(enricher, "_query_hunter_multi", return_value=[]), \
+             patch.object(enricher, "_query_website_contact_multi", return_value=[]), \
+             patch.object(enricher, "RATE_LIMIT_DELAY", 0), \
+             patch.object(enricher, "HUNTER_DELAY", 0):
+            rows = enricher.enrich_lead_multi(lead, index=0, max_contacts=3)
+
+        assert len(rows) == 1
+        assert rows[0]["enrichment_source"] == "none"
+        assert rows[0]["kp_email"] == ""
