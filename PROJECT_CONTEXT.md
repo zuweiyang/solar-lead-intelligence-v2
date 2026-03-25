@@ -3887,3 +3887,7 @@ Related control-panel hardening:
   - root cause: at least one manifest uploaded to GCS contained a Windows-style UTF-8 BOM
   - symptom: worker alert `manifest_load_failed` with `Unexpected UTF-8 BOM (decode using utf-8-sig)`
   - fix: `cloud_send_worker._download_manifest()` now reads manifests with `encoding=\"utf-8-sig\"`
+- 2026-03-25: Queue removal now force-cleans running jobs when an operator explicitly deletes them.
+  - previous behavior: `Remove selected` refused to remove `running` jobs, which could trap the queue behind a stuck run
+  - new behavior: explicit delete now also stops the scheduler, clears `campaign_run.lock`, marks the active campaign as removed/failed, removes the queue row, and restarts the runner when pending jobs remain
+  - intended UX: if an operator clicks delete, the selected job is deleted even if it is currently marked `running`

@@ -780,6 +780,68 @@ def _stop_scheduler_process() -> str:
         return f"Scheduler was not running (cleaned up stale PID): {exc}"
 
 
+def _force_remove_queue_job(job: dict, remove_job_fn) -> tuple[bool, str]:
+    """
+    Remove a queue job even if it is currently marked running.
+
+    If the selected job is the active runner job, also stop the scheduler,
+    clear the campaign lock, and mark the active campaign state as failed so
+    the queue can continue immediately instead of waiting forever.
+    """
+    from config.settings import CAMPAIGN_LOCK_FILE
+    from src.workflow_9_campaign_runner.campaign_state import (
+        STATUS_FAILED as CAMPAIGN_STATUS_FAILED,
+        load_campaign_state,
+        save_campaign_state,
+    )
+
+    job_id = str(job.get("job_id") or "").strip()
+    if not job_id:
+        return False, "Missing job_id."
+
+    was_running = str(job.get("status") or "").strip().lower() == "running"
+    details: list[str] = []
+
+    if was_running:
+        details.append(_stop_scheduler_process())
+
+        campaign_id = str(job.get("campaign_id") or "").strip()
+        if not campaign_id and CAMPAIGN_LOCK_FILE.exists():
+            try:
+                campaign_id = CAMPAIGN_LOCK_FILE.read_text(encoding="utf-8").strip()
+            except Exception:
+                campaign_id = ""
+
+        state = load_campaign_state()
+        if state:
+            state_campaign_id = str(state.get("campaign_id") or "").strip()
+            if not campaign_id or state_campaign_id == campaign_id:
+                state["status"] = CAMPAIGN_STATUS_FAILED
+                state["error_message"] = "Removed from queue by operator."
+                state["updated_at"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+                save_campaign_state(state)
+                if state_campaign_id:
+                    details.append(f"Marked active campaign {state_campaign_id} as removed.")
+
+        CAMPAIGN_LOCK_FILE.unlink(missing_ok=True)
+        details.append("Cleared campaign_run.lock.")
+
+    removed = bool(remove_job_fn(job_id))
+    if not removed:
+        return False, "Queue row was not found."
+
+    if was_running:
+        from src.workflow_9_queue_scheduler.queue_store import is_queue_paused, queue_summary
+
+        summary = queue_summary()
+        if not is_queue_paused() and int(summary.get("pending") or 0) > 0:
+            ok, msg = _start_scheduler_process()
+            details.append(msg if ok else f"Runner restart failed: {msg}")
+
+    message = " ".join(part for part in details if part).strip() or "Job removed."
+    return True, message
+
+
 _QUEUE_PANEL_REFRESH_INTERVAL = 4
 _UI_INTERACTION_PAUSE_SECONDS = 8
 
@@ -2327,20 +2389,19 @@ def _render_queue_panel_content() -> None:
     action_col1, action_col2 = st.columns(2)
     with action_col1:
         if st.button("Remove selected", key="queue_remove_selected", disabled=not selected_ids):
-            running_selected = [j["job_id"] for j in selected_jobs if j.get("status") == STATUS_RUNNING]
-            if running_selected:
-                st.warning(
-                    "Running jobs cannot be removed while they are in progress: "
-                    + ", ".join(running_selected)
-                )
-            else:
-                removed = 0
-                for job_id in selected_ids:
-                    if remove_job(job_id):
-                        removed += 1
-                log.action("Remove selected jobs", count=removed, selected=len(selected_ids))
-                st.toast(f"Removed {removed} job(s).")
-                st.rerun()
+            removed = 0
+            cleanup_notes: list[str] = []
+            for job in selected_jobs:
+                ok, detail = _force_remove_queue_job(job, remove_job)
+                if ok:
+                    removed += 1
+                if detail:
+                    cleanup_notes.append(f"{job['job_id']}: {detail}")
+            log.action("Remove selected jobs", count=removed, selected=len(selected_ids))
+            st.toast(f"Removed {removed} job(s).")
+            if cleanup_notes:
+                st.info(" ".join(cleanup_notes))
+            st.rerun()
 
     with action_col2:
         if st.button("Re-queue selected", key="queue_requeue_selected", disabled=not selected_ids):
