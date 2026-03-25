@@ -3883,3 +3883,7 @@ Related control-panel hardening:
   - updated `DAILY_EMAIL_LIMIT` default to `100`
   - updated `CLOUD_SEND_INBOX_DAILY_LIMIT` fallback to `100`
   - updated `.env.example` to document the new `100/day` default
+- 2026-03-25: Hardened cloud manifest loading against UTF-8 BOM.
+  - root cause: at least one manifest uploaded to GCS contained a Windows-style UTF-8 BOM
+  - symptom: worker alert `manifest_load_failed` with `Unexpected UTF-8 BOM (decode using utf-8-sig)`
+  - fix: `cloud_send_worker._download_manifest()` now reads manifests with `encoding=\"utf-8-sig\"`

@@ -596,7 +596,8 @@ def _download_manifest(manifest_uri: str) -> dict:
     with tempfile.TemporaryDirectory() as tmp:
         local_path = Path(tmp) / "manifest.json"
         _run_cmd(["storage", "cp", manifest_uri, str(local_path)])
-        with open(local_path, encoding="utf-8") as f:
+        # Be tolerant of Windows-authored JSON files that may include a UTF-8 BOM.
+        with open(local_path, encoding="utf-8-sig") as f:
             return json.load(f)
 
 
