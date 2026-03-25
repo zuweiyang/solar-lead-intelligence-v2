@@ -3873,3 +3873,9 @@ Related control-panel hardening:
     - cloud queues anytime
     - send only when market-local window is open
     - rows should no longer be deferred **just because** they were processed outside the target-market send window
+- 2026-03-25: Fixed a UI counting bug that made `Queue` / `Emails In Final Queue` look much larger than reality.
+  - root cause: `ui_state._count_csv()` was counting raw file lines
+  - `final_send_queue.csv` and similar files contain multi-line email bodies, so one CSV record could span many text lines
+  - result: queue counts like `49`, `72`, `108`, `117` were inflated and did not match actual sendable record counts
+  - fix: `ui_state._count_csv()` now counts parsed CSV records via `csv.DictReader`
+  - effect: Ready To Deploy / reconciliation queue counts should now align with actual email record counts and with `send_batch_summary.total`

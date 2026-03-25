@@ -113,9 +113,10 @@ def _count_csv(path: Path) -> int:
     if not path.exists():
         return 0
     try:
-        with open(path, "r", encoding="utf-8", newline="") as f:
-            line_count = sum(1 for _ in f)
-        return max(line_count - 1, 0)
+        # Count CSV records with the parser instead of raw lines so files with
+        # multi-line email bodies still report the real row count.
+        with open(path, newline="", encoding="utf-8") as f:
+            return sum(1 for _ in csv.DictReader(f))
     except Exception:
         rows = _read_csv(path)
         return len(rows)
