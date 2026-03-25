@@ -1,5 +1,9 @@
 from src.market_localization import (
+    BRAZIL_CRAWL_HOME_HINTS,
+    BRAZIL_CRAWL_ACCEPT_LANGUAGE,
     BRAZIL_SEARCH_KEYWORDS,
+    get_crawl_accept_language,
+    get_crawl_home_hints,
     get_email_language,
     get_crawl_target_paths,
     get_generic_guess_local_parts,
@@ -26,6 +30,10 @@ def test_brazil_crawl_paths_prioritize_contact_pages() -> None:
     assert "/contact" in paths
 
 
+def test_brazil_crawl_home_hints_prioritize_localized_site_versions() -> None:
+    assert get_crawl_home_hints("Brazil") == list(BRAZIL_CRAWL_HOME_HINTS)
+
+
 def test_brazil_guess_email_uses_local_generic_prefixes() -> None:
     first = _guess_email("empresa.com.br", 0, "Brazil")
     second = _guess_email("empresa.com.br", 1, "Brazil")
@@ -47,6 +55,10 @@ def test_brazil_generic_mailboxes_are_detected() -> None:
 
 def test_brazil_email_language_defaults_to_portuguese() -> None:
     assert get_email_language("Brazil") == "pt-BR"
+
+
+def test_brazil_crawl_accept_language_defaults_to_portuguese() -> None:
+    assert get_crawl_accept_language("Brazil") == BRAZIL_CRAWL_ACCEPT_LANGUAGE
 
 
 def test_brazil_rule_based_email_is_portuguese() -> None:

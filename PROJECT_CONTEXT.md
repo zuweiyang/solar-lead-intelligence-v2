@@ -3894,3 +3894,25 @@ Related control-panel hardening:
 - Queue runner stale-PID handling is now stricter on Windows: `scheduler.pid` is auto-cleared when `tasklist` returns an error / missing process, so the UI no longer shows `Scheduler — Active` for a dead runner.
 - Queue job removal cleanup is now more complete: removing a running job clears stale scheduler pid state, clears `campaign_run.lock`, marks global active campaign state failed, and also marks the campaign-scoped `data/runs/<campaign_id>/campaign_run_state.json` as removed when present.
 - 2026-03-25: Workflow 6 first-touch routing now hard-blocks `guessed` contacts. `Apollo`, `Hunter`, and `website` contacts can still enter `final_send_queue`, but guessed emails remain enrichment-only and are never selected as named, generic, or fallback send targets.
+- 2026-03-25: Fixed Workflow 3 site-email extraction for multi-level public suffixes.
+  - root cause: `_EMAIL_RE` in `src/workflow_3_web_crawler/content_extractor.py` only matched a single-dot suffix like `.com`, so visible Brazil site emails such as `contato@projetosolarium.com.br` were truncated to `contato@projetosolarium.com`
+  - impact: Workflow 5.5 website-contact lookup received broken `site_emails`, which then lost to guessed fallbacks
+  - fix: updated `_EMAIL_RE` to support multi-level suffixes like `.com.br`, `.com.mx`, `.co.uk`
+  - added regression coverage in `tests/test_content_extractor_emails.py` for visible-text and `mailto:` extraction of `.com.br`
+- 2026-03-25: Country selection now also controls website crawl language preference.
+  - added `get_crawl_accept_language(country)` in `src/market_localization.py`
+  - `src/workflow_3_web_crawler/website_crawler.py` now sends an `Accept-Language` header per country instead of using a single static header for all markets
+  - Brazil now crawls with `pt-BR,pt;q=0.9,en;q=0.6`
+  - this complements the existing Brazil keyword/crawl-path localization so "selected country" now influences:
+    - search keywords
+    - crawl target paths
+    - crawl request language
+    - email language
+- 2026-03-25: Country selection now also influences preferred website entry paths.
+  - added `get_crawl_home_hints(country)` in `src/market_localization.py`
+  - `src/workflow_3_web_crawler/website_crawler.py` now probes localized site roots before standard contact/about paths
+  - Brazil currently prefers these site-entry hints:
+    - `/pt-br`
+    - `/pt`
+    - `/br`
+  - goal: when a company site has country/language-specific subpaths, Workflow 3 is more likely to crawl the Brazil-localized version instead of falling back to an English/global homepage

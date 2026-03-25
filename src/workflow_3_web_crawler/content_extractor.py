@@ -27,8 +27,12 @@ _SKIP_EMAIL_SUFFIXES = (
     "amazonaws.com", "sendgrid.net", "mailchimp.com",
 )
 
-# Valid TLD: 2-6 alpha chars, followed by non-alphanumeric (prevents partial matches)
-_EMAIL_RE = re.compile(r"[\w.+\-]+@[\w\-]+\.[a-zA-Z]{2,6}(?=[^a-zA-Z0-9]|$)", re.ASCII)
+# Email matcher that supports multi-level public suffixes like .com.br and .co.uk.
+# We still require a non-alphanumeric boundary so trailing HTML/CSS noise is not captured.
+_EMAIL_RE = re.compile(
+    r"[\w.+\-]+@(?:[\w\-]+\.)+[a-zA-Z]{2,24}(?=[^a-zA-Z0-9]|$)",
+    re.ASCII,
+)
 
 # North American phone — MUST have at least one separator (-, ., space, parens)
 # Rejects bare 10-digit number strings embedded in JS/CSS

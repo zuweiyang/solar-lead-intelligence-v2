@@ -10,13 +10,17 @@ import requests
 import tldextract
 
 from config.settings import RAW_LEADS_FILE, COMPANY_PAGES_FILE, CRAWL_DELAY_SECONDS
-from src.market_localization import get_crawl_target_paths
+from src.market_localization import (
+    get_crawl_accept_language,
+    get_crawl_home_hints,
+    get_crawl_target_paths,
+)
 
 MAX_PAGES_PER_SITE = 5
 REQUEST_TIMEOUT    = 10
 TEST_LIMIT         = 50   # max leads crawled during smoke tests
 
-HEADERS = {
+BASE_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -41,10 +45,14 @@ def _ensure_https(url: str) -> str:
     return url
 
 
-def _fetch(url: str) -> str | None:
+def _fetch(url: str, country: str = "") -> str | None:
     """GET a URL and return HTML text, or None on any error."""
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT,
+        headers = {
+            **BASE_HEADERS,
+            "Accept-Language": get_crawl_accept_language(country),
+        }
+        resp = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT,
                             allow_redirects=True)
         resp.raise_for_status()
         ct = resp.headers.get("Content-Type", "")
@@ -67,19 +75,31 @@ def crawl_site(base_url: str, country: str = "") -> dict[str, str]:
     """
     base_url = _ensure_https(base_url)
     pages: dict[str, str] = {}
+    home_hints = get_crawl_home_hints(country)
     target_paths = get_crawl_target_paths(country)
 
     # Always crawl home first
-    html = _fetch(base_url)
+    html = _fetch(base_url, country=country)
     if html:
         pages["home"] = html
+
+    # Probe localized site roots next so multilingual sites can expose the
+    # country-appropriate version before we crawl contact/about pages.
+    for hint in home_hints:
+        if len(pages) >= MAX_PAGES_PER_SITE:
+            break
+        label = f"home_{hint.strip('/').replace('-', '_')}"
+        url = urljoin(base_url, hint)
+        html = _fetch(url, country=country)
+        if html:
+            pages[label] = html
 
     for path in target_paths:
         if len(pages) >= MAX_PAGES_PER_SITE:
             break
         label = path.strip("/").replace("-", "_") or "home"
         url   = urljoin(base_url, path)
-        html  = _fetch(url)
+        html  = _fetch(url, country=country)
         if html:
             pages[label] = html
 

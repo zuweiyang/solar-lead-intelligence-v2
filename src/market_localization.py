@@ -33,6 +33,14 @@ DEFAULT_CRAWL_TARGET_PATHS: tuple[str, ...] = (
     "/products",
 )
 
+DEFAULT_CRAWL_HOME_HINTS: tuple[str, ...] = ()
+
+BRAZIL_CRAWL_HOME_HINTS: tuple[str, ...] = (
+    "/pt-br",
+    "/pt",
+    "/br",
+)
+
 BRAZIL_CRAWL_TARGET_PATHS: tuple[str, ...] = (
     "/contato",
     "/fale-conosco",
@@ -112,6 +120,8 @@ BRAZIL_GENERIC_MAILBOX_LOCAL_PARTS: tuple[str, ...] = (
 
 DEFAULT_EMAIL_LANGUAGE = "en"
 BRAZIL_EMAIL_LANGUAGE = "pt-BR"
+DEFAULT_CRAWL_ACCEPT_LANGUAGE = "en-US,en;q=0.9"
+BRAZIL_CRAWL_ACCEPT_LANGUAGE = "pt-BR,pt;q=0.9,en;q=0.6"
 
 
 def _country_key(country: str) -> str:
@@ -143,6 +153,12 @@ def get_crawl_target_paths(country: str) -> list[str]:
     return list(DEFAULT_CRAWL_TARGET_PATHS)
 
 
+def get_crawl_home_hints(country: str) -> list[str]:
+    if _country_key(country) == "brazil":
+        return list(BRAZIL_CRAWL_HOME_HINTS)
+    return list(DEFAULT_CRAWL_HOME_HINTS)
+
+
 def get_generic_guess_local_parts(country: str) -> tuple[str, ...]:
     if _country_key(country) == "brazil":
         return BRAZIL_GENERIC_GUESS_LOCAL_PARTS
@@ -165,3 +181,9 @@ def get_email_language_name(country: str = "") -> str:
     if get_email_language(country) == BRAZIL_EMAIL_LANGUAGE:
         return "Brazilian Portuguese"
     return "English"
+
+
+def get_crawl_accept_language(country: str = "") -> str:
+    if _country_key(country) == "brazil":
+        return BRAZIL_CRAWL_ACCEPT_LANGUAGE
+    return DEFAULT_CRAWL_ACCEPT_LANGUAGE
