@@ -66,3 +66,46 @@ def test_extract_contacts_marks_phone_as_whatsapp_when_page_explicitly_mentions_
     assert emails == []
     assert "+1 604-555-0101" in phones
     assert "+1 604-555-0101" in whatsapp_phones
+
+
+def test_extract_contacts_ignores_js_numeric_noise_when_visible_phone_exists():
+    html = """
+    <html>
+      <head>
+        <script>
+          var trackingId = 1736312373;
+          var randomSeed = 1674875262;
+        </script>
+      </head>
+      <body>
+        <div>Telefone: (11) 3090-5976</div>
+      </body>
+    </html>
+    """
+
+    emails, phones, whatsapp_phones = _extract_contacts({"home": html})
+
+    assert emails == []
+    assert "(11) 3090-5976" in phones
+    assert "1736312373" not in phones
+    assert "1674875262" not in phones
+    assert whatsapp_phones == []
+
+
+def test_extract_contacts_prefers_page_local_phone_for_whatsapp_hint():
+    html = """
+    <html>
+      <body>
+        <div>Telefone comercial: (11) 3090-5976</div>
+        <div>WhatsApp: (11) 97071-3044</div>
+      </body>
+    </html>
+    """
+
+    emails, phones, whatsapp_phones = _extract_contacts({"home": html})
+
+    assert emails == []
+    assert "(11) 3090-5976" in phones
+    assert "(11) 97071-3044" in phones
+    assert "(11) 3090-5976" not in whatsapp_phones
+    assert "(11) 97071-3044" in whatsapp_phones

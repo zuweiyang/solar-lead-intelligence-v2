@@ -30,6 +30,7 @@ SCORED_CONTACTS_FIELDS: list[str] = [
     "site_phone",
     "whatsapp_phone",
     "email_sendable", "contact_channel", "alt_outreach_possible",
+    "manual_outreach_channel", "manual_outreach_highlight",
     "contact_trust", "skip_reason",
     # ── P1-2A rank / generic flag ─────────────────────────────────────────────
     "contact_rank",        # original P1-2A rank (1/2/3)
@@ -89,6 +90,8 @@ class ScoredContact:
     email_sendable:          str = ""
     contact_channel:         str = ""
     alt_outreach_possible:   str = ""
+    manual_outreach_channel: str = ""
+    manual_outreach_highlight: str = ""
     contact_trust:           str = ""
     skip_reason:             str = ""
     contact_rank:            str = ""

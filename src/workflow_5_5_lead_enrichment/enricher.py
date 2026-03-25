@@ -227,6 +227,7 @@ ENRICHED_FIELDS = [
     "whatsapp_phone",
     # contact channel labels — computed post-enrichment
     "email_sendable", "contact_channel", "alt_outreach_possible",
+    "manual_outreach_channel", "manual_outreach_highlight",
     # contact trust / skip signals — computed post-enrichment
     "contact_trust", "skip_reason",
 ]
@@ -732,6 +733,9 @@ def _contact_labels(kp_email: str, site_phone: str, whatsapp_phone: str, website
     contact_channel       — Best available outreach channel for this lead.
     alt_outreach_possible — True when a non-email channel (phone/messaging)
                             is available even though no email was found.
+    manual_outreach_channel — Explicit non-email contact option to highlight in
+                              tables/exports even when email remains primary.
+    manual_outreach_highlight — True when phone/WhatsApp/messaging is available.
     """
     has_email    = bool(kp_email and "@" in kp_email)
     has_phone    = bool(site_phone)
@@ -750,10 +754,23 @@ def _contact_labels(kp_email: str, site_phone: str, whatsapp_phone: str, website
     else:
         channel = "none"
 
+    if has_whatsapp and has_phone:
+        manual_channel = "phone+whatsapp"
+    elif has_whatsapp:
+        manual_channel = "whatsapp"
+    elif has_phone:
+        manual_channel = "phone"
+    elif is_messaging:
+        manual_channel = "messaging"
+    else:
+        manual_channel = "none"
+
     return {
         "email_sendable":        "true"  if has_email else "false",
         "contact_channel":       channel,
         "alt_outreach_possible": "true"  if (not has_email and (has_phone or has_whatsapp or is_messaging)) else "false",
+        "manual_outreach_channel": manual_channel,
+        "manual_outreach_highlight": "true" if manual_channel != "none" else "false",
     }
 
 

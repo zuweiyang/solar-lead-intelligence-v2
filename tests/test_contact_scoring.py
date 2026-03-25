@@ -575,6 +575,7 @@ class TestPipelinePersistence:
             "kp_email": "jane@acme.com", "enrichment_source": "apollo",
             "site_phone": "", "whatsapp_phone": "", "email_sendable": "true",
             "contact_channel": "email", "alt_outreach_possible": "false",
+            "manual_outreach_channel": "none", "manual_outreach_highlight": "false",
             "contact_trust": "trusted", "skip_reason": "",
             "contact_rank": "1", "is_generic_mailbox": "false",
         }

@@ -1,10 +1,12 @@
 from src.market_localization import (
     BRAZIL_CRAWL_HOME_HINTS,
     BRAZIL_CRAWL_ACCEPT_LANGUAGE,
+    BRAZIL_MARKET_PROFILE,
     BRAZIL_SEARCH_KEYWORDS,
     get_crawl_accept_language,
     get_crawl_home_hints,
     get_email_language,
+    get_market_profile,
     get_crawl_target_paths,
     get_generic_guess_local_parts,
     get_generic_mailbox_local_parts,
@@ -20,7 +22,11 @@ from src.workflow_9_campaign_runner.campaign_config import CampaignConfig, get_e
 def test_brazil_uses_portuguese_default_keywords() -> None:
     cfg = CampaignConfig(country="Brazil", keyword_mode="default")
     assert get_effective_keywords(cfg) == list(BRAZIL_SEARCH_KEYWORDS)
-    assert "energia solar" in get_search_keywords("Brazil")
+    assert "integrador solar" in get_search_keywords("Brazil")
+    assert "distribuidor fotovoltaico" in get_search_keywords("Brazil")
+    assert "instalador solar" in get_search_keywords("Brazil")
+    assert "empresa de energia solar" in get_search_keywords("Brazil")
+    assert "epc solar" in get_search_keywords("Brazil")
     assert "solar installer" not in get_search_keywords("Brazil")
 
 
@@ -32,6 +38,17 @@ def test_brazil_crawl_paths_prioritize_contact_pages() -> None:
 
 def test_brazil_crawl_home_hints_prioritize_localized_site_versions() -> None:
     assert get_crawl_home_hints("Brazil") == list(BRAZIL_CRAWL_HOME_HINTS)
+
+
+def test_brazil_market_profile_is_country_template() -> None:
+    profile = get_market_profile("Brazil")
+    assert profile == BRAZIL_MARKET_PROFILE
+    assert profile.country == "Brazil"
+    assert profile.email_language == "pt-BR"
+    assert profile.email_language_name == "Brazilian Portuguese"
+    assert profile.search_keywords[0] == "integrador solar"
+    assert "/contato" in profile.crawl_target_paths
+    assert "/pt-br" in profile.crawl_home_hints
 
 
 def test_brazil_guess_email_uses_local_generic_prefixes() -> None:

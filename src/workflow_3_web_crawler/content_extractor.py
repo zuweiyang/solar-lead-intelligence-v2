@@ -58,8 +58,60 @@ _WHATSAPP_URL_RE = re.compile(
     re.IGNORECASE,
 )
 
+_TEL_URL_RE = re.compile(r"""^tel:(.+)$""", re.IGNORECASE)
+
 # Obvious placeholder numbers to reject
 _FAKE_PHONE_PATTERNS = re.compile(r"^(\d)\1{6,}$")   # e.g. 0000000000, 9999999999
+
+
+def _normalize_phone_match(raw: str, phone_re: re.Pattern[str]) -> str | None:
+    """Return a cleaned phone string when the candidate looks like a real phone."""
+    digits = re.sub(r"\D", "", raw)
+
+    if phone_re is _NA_PHONE_RE:
+        if len(digits) == 11 and digits.startswith("1"):
+            digits = digits[1:]
+        if len(digits) != 10:
+            return None
+    else:
+        if len(digits) == 13 and digits.startswith("55"):
+            digits = digits[2:]
+        if len(digits) not in (10, 11):
+            return None
+
+    if _FAKE_PHONE_PATTERNS.match(digits):
+        return None
+
+    # Reject bare long digit strings that came from hidden data blobs / tracking.
+    if raw.strip().isdigit():
+        return None
+
+    return raw.strip()
+
+
+def _visible_page_text(soup: BeautifulSoup) -> str:
+    """Return visible text only, excluding high-noise tags."""
+    clone = BeautifulSoup(str(soup), "html.parser")
+    for tag in clone(REMOVE_TAGS):
+        tag.decompose()
+    return clone.get_text(separator=" ", strip=True)
+
+
+def _extract_whatsapp_hint_phones(visible_text: str) -> list[str]:
+    """Extract phone candidates that are explicitly tied to WhatsApp wording."""
+    hint_phones: list[str] = []
+    if "whatsapp" not in visible_text.lower():
+        return hint_phones
+
+    segments = re.split(r"(?i)whatsapp", visible_text)
+    for segment in segments[1:]:
+        local_window = segment[:80]
+        for phone_re in (_BRAZIL_PHONE_RE, _NA_PHONE_RE):
+            for match in phone_re.finditer(local_window):
+                formatted = _normalize_phone_match(match.group(), phone_re)
+                if formatted and formatted not in hint_phones:
+                    hint_phones.append(formatted)
+    return hint_phones
 
 
 # ---------------------------------------------------------------------------
@@ -101,6 +153,9 @@ def _extract_contacts(pages: dict[str, str]) -> tuple[list[str], list[str], list
     for html in pages.values():
         # --- emails: check <a href="mailto:"> first (most reliable) ---
         soup = BeautifulSoup(html, "html.parser")
+        page_phones: list[str] = []
+        visible_text = _visible_page_text(soup)
+        hinted_whatsapp_phones = _extract_whatsapp_hint_phones(visible_text)
         for a in soup.find_all("a", href=True):
             href = a["href"]
             if href.lower().startswith("mailto:"):
@@ -112,6 +167,17 @@ def _extract_contacts(pages: dict[str, str]) -> tuple[list[str], list[str], list
                 formatted = f"+{digits}"
                 if formatted not in whatsapp_seen:
                     whatsapp_seen.append(formatted)
+            tel_match = _TEL_URL_RE.match(href.strip())
+            if tel_match:
+                tel_value = tel_match.group(1).split("?")[0].strip()
+                for phone_re in (_NA_PHONE_RE, _BRAZIL_PHONE_RE):
+                    normalized = _normalize_phone_match(tel_value, phone_re)
+                    if normalized:
+                        if normalized not in phones_seen:
+                            phones_seen.append(normalized)
+                        if normalized not in page_phones:
+                            page_phones.append(normalized)
+                        break
 
         # --- emails: regex scan of full HTML text ---
         for match in _EMAIL_RE.finditer(html):
@@ -125,30 +191,23 @@ def _extract_contacts(pages: dict[str, str]) -> tuple[list[str], list[str], list
                 continue
             emails_seen[addr] = emails_seen.get(addr, 0) + 1
 
-        # --- phones ---
+        # --- phones: visible text only to avoid JS/CSS/tracking-number noise ---
         for phone_re in (_NA_PHONE_RE, _BRAZIL_PHONE_RE):
-            for match in phone_re.finditer(html):
-                digits = re.sub(r"\D", "", match.group())
-                # North American normalization.
-                if phone_re is _NA_PHONE_RE:
-                    if len(digits) == 11 and digits.startswith("1"):
-                        digits = digits[1:]
-                    if len(digits) != 10:
-                        continue
-                # Brazil normalization.
-                else:
-                    if len(digits) == 13 and digits.startswith("55"):
-                        digits = digits[2:]
-                    if len(digits) not in (10, 11):
-                        continue
-                if _FAKE_PHONE_PATTERNS.match(digits):
+            for match in phone_re.finditer(visible_text):
+                formatted = _normalize_phone_match(match.group(), phone_re)
+                if not formatted:
                     continue
-                formatted = match.group().strip()
                 if formatted not in phones_seen:
                     phones_seen.append(formatted)
+                if formatted not in page_phones:
+                    page_phones.append(formatted)
 
-        if "whatsapp" in html.lower() and phones_seen:
-            first_phone = phones_seen[0]
+        for hinted_phone in hinted_whatsapp_phones:
+            if hinted_phone not in whatsapp_seen:
+                whatsapp_seen.append(hinted_phone)
+
+        if "whatsapp" in visible_text.lower() and page_phones and not hinted_whatsapp_phones:
+            first_phone = page_phones[0]
             if first_phone not in whatsapp_seen:
                 whatsapp_seen.append(first_phone)
 

@@ -69,7 +69,8 @@ def _write_empty_enriched_leads(run_dir: Path) -> Path:
         "company_name,website,place_id,company_type,market_focus,services_detected,"
         "confidence_score,classification_method,lead_score,score_breakdown,target_tier,"
         "kp_name,kp_title,kp_email,enrichment_source,site_phone,whatsapp_phone,email_sendable,"
-        "contact_channel,alt_outreach_possible,contact_trust,skip_reason"
+        "contact_channel,alt_outreach_possible,manual_outreach_channel,"
+        "manual_outreach_highlight,contact_trust,skip_reason"
     )
     path.write_text(header + "\n", encoding="utf-8")
     return path

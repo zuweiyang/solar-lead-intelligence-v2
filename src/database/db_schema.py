@@ -55,6 +55,8 @@ CREATE TABLE IF NOT EXISTS contacts (
     whatsapp_phone TEXT,
     contact_channel TEXT,
     alt_outreach_possible INTEGER NOT NULL DEFAULT 0,
+    manual_outreach_channel TEXT,
+    manual_outreach_highlight INTEGER NOT NULL DEFAULT 0,
     source        TEXT,
     confidence    REAL,
     created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
@@ -219,6 +221,8 @@ _MIGRATIONS_CONTACTS: list[tuple[str, str]] = [
     ("whatsapp_phone",                     "TEXT"),
     ("contact_channel",                    "TEXT"),
     ("alt_outreach_possible",              "INTEGER NOT NULL DEFAULT 0"),
+    ("manual_outreach_channel",            "TEXT"),
+    ("manual_outreach_highlight",          "INTEGER NOT NULL DEFAULT 0"),
     ("contact_rank",                       "INTEGER NOT NULL DEFAULT 1"),
     ("is_generic_mailbox",                 "INTEGER NOT NULL DEFAULT 0"),
     # P1-2B — contact scoring fields

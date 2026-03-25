@@ -3959,3 +3959,44 @@ Related control-panel hardening:
     - `/pt`
     - `/br`
   - goal: when a company site has country/language-specific subpaths, Workflow 3 is more likely to crawl the Brazil-localized version instead of falling back to an English/global homepage
+- 2026-03-25: Refactored Brazil localization into the first structured `MarketProfile` template in `src/market_localization.py`.
+  - previous state: localization behavior was scattered across `if country == "brazil"` checks
+  - new state: `get_market_profile(country)` now returns a country-scoped template object while preserving the existing helper APIs used by the rest of the pipeline
+  - Brazil is now the first concrete market template and includes:
+    - Portuguese search keywords tuned toward `integrador`, `distribuidor`, `EPC`, and `estrutura fotovoltaica`
+    - Brazil-specific localized site-entry hints and contact paths
+    - Brazil-specific generic mailbox / guess prefixes
+    - Brazil-specific crawl request language and email language
+  - intended benefit: future countries like Argentina and Mexico can be added as first-class market templates instead of adding more country-specific conditionals throughout the codebase
+- 2026-03-25: Local Windows Python tooling is now available for real project-level validation.
+  - confirmed interpreter path: `D:\solar-lead-intelligence\.venv\Scripts\python.exe`
+  - dependency install now succeeds after normalizing `requirements.txt` comments to ASCII for Windows/GBK compatibility
+  - focused local tests passed:
+    - `tests/test_brazil_market_localization.py`
+    - `tests/test_content_extractor_emails.py`
+- 2026-03-25: Queue-panel mutations now clear Streamlit queue/session residue instead of relying only on disk cleanup.
+  - `src/workflow_9_5_streamlit_control_panel/ui_views.py` now resets queue-related session state after:
+    - start / stop runner
+    - resume / pause queue
+    - remove selected jobs
+    - re-queue selected jobs
+  - intent: if queue files on disk are already clean, the control panel should rehydrate from canonical queue state instead of continuing to show stale `Scheduler — Active`, stale pending counts, or stale table selections inside the current Streamlit session
+2026-03-25 22:35
+
+Brazil market profile was widened from a replacement-style keyword set to a template that keeps broader installer / EPC terms alongside the newer distributor / mounting-structure procurement terms. Brazil default keywords now retain `integrador solar`, `instalador solar`, `instalador fotovoltaico`, `empresa de energia solar`, `empresa de energia solar comercial`, `epc solar`, and `empresa EPC solar`, while also keeping `distribuidor fotovoltaico`, `estrutura fotovoltaica`, `fabricante de estrutura fotovoltaica`, and `suporte para painel solar`.
+
+Contact enrichment / persistence now adds explicit non-email outreach emphasis fields so phone and WhatsApp contacts can be highlighted in downstream tables and exports instead of being silently buried behind email-first logic:
+- `manual_outreach_channel`
+- `manual_outreach_highlight`
+
+These fields are now present in Workflow 5.5 enrichment outputs, Workflow 5.6 contact scoring models, and the SQLite `contacts` table / insert path.
+
+2026-03-25 22:49
+
+Phone / WhatsApp extraction in Workflow 3 was tightened globally, not just for Brazil. The previous logic scanned raw HTML for phone patterns, which let JS/CSS/tracking numbers leak into `site_phones`, and it could also mark the wrong phone as WhatsApp by promoting the first globally seen phone whenever the page mentioned `whatsapp`. The extractor now:
+- scans visible page text for phones instead of raw HTML
+- still reads `tel:` links explicitly
+- rejects bare digit-only noise candidates
+- only promotes a WhatsApp fallback from phones found on the same page that contains the WhatsApp hint
+
+This is intended to reduce fake numeric noise in `site_phone` / `whatsapp_phone` across all countries, not just Brazil.
