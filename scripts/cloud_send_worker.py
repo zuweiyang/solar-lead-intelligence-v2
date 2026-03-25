@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import csv
 import shutil
 import smtplib
 import subprocess
@@ -77,6 +78,7 @@ from src.workflow_9_campaign_runner.campaign_state import (
     sync_cloud_send_status,
 )
 from scripts.auto_send_runs import _campaign_next_due, _run_campaign_send
+from src.workflow_7_email_sending.send_guard import next_eligible_send_time
 
 STATE_FILE = DATA_DIR / "cloud_send_worker_state.json"
 ALERTS_FILE = DATA_DIR / "cloud_worker_alerts.jsonl"
@@ -687,6 +689,49 @@ def _upload_run_outputs(campaign_id: str) -> dict[str, float | int]:
     return stats
 
 
+def _load_final_queue_rows(campaign_id: str) -> tuple[list[str], list[dict]]:
+    path = RUNS_DIR / campaign_id / "final_send_queue.csv"
+    if not path.exists():
+        raise FileNotFoundError(f"final_send_queue.csv not found for {campaign_id}: {path}")
+    with open(path, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        fieldnames = list(reader.fieldnames or [])
+        rows = list(reader)
+    return fieldnames, rows
+
+
+def _write_final_queue_rows(campaign_id: str, fieldnames: list[str], rows: list[dict]) -> None:
+    path = RUNS_DIR / campaign_id / "final_send_queue.csv"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row)
+
+
+def _partition_window_ready_rows(
+    campaign_id: str,
+    now_utc: datetime | None = None,
+) -> tuple[list[str], list[dict], list[dict], datetime | None]:
+    fieldnames, rows = _load_final_queue_rows(campaign_id)
+    current = now_utc or datetime.now(tz=timezone.utc)
+    ready_rows: list[dict] = []
+    waiting_rows: list[dict] = []
+    next_due: datetime | None = None
+
+    for row in rows:
+        due = next_eligible_send_time(row, now=current, campaign_id=campaign_id)
+        if due <= current:
+            ready_rows.append(row)
+            continue
+        waiting_rows.append(row)
+        if next_due is None or due < next_due:
+            next_due = due
+
+    return fieldnames, ready_rows, waiting_rows, next_due
+
+
 def _claim_manifest(manifest_uri: str, campaign_id: str) -> str:
     claimed_uri = _bucket_uri(GCS_INFLIGHT_PREFIX, f"{campaign_id}.json")
     _run_cmd(["storage", "mv", manifest_uri, claimed_uri])
@@ -739,6 +784,25 @@ def _process_campaign(
     hourly_limit_override: int | None = None,
 ) -> dict[str, object]:
     print(f"[CloudWorker] Preparing campaign {campaign_id}")
+    fieldnames, ready_rows, waiting_rows, next_market_due = _partition_window_ready_rows(
+        campaign_id,
+        now_utc=datetime.now(tz=timezone.utc),
+    )
+    if not ready_rows:
+        return {
+            "completed": False,
+            "processed_manifest_uri": "",
+            "upload_stats": None,
+            "send_summary": {},
+            "wait_reason": "market_window",
+            "remaining_unprocessed": len(waiting_rows),
+            "next_due_utc": next_market_due,
+        }
+
+    trimmed_for_window = bool(waiting_rows)
+    if trimmed_for_window:
+        _write_final_queue_rows(campaign_id, fieldnames, ready_rows)
+
     sync_cloud_send_status(
         campaign_id,
         CLOUD_SEND_SENDING,
@@ -756,36 +820,55 @@ def _process_campaign(
             daily_limit_override=daily_limit_override,
             hourly_limit_override=hourly_limit_override,
         )
-        upload_stats = _upload_run_outputs(campaign_id)
         processed_count = _send_summary_processed_count(send_summary)
-        remaining_unprocessed = max(
+        remaining_ready = max(
             int(send_summary.get("remaining_unprocessed") or 0),
             max(int(send_summary.get("total") or 0) - processed_count, 0),
         )
+        remaining_unprocessed = remaining_ready + len(waiting_rows)
         stopped_daily_limit = bool(int(send_summary.get("stopped_daily_limit") or 0))
         stopped_hourly_limit = bool(int(send_summary.get("stopped_hourly_limit") or 0))
 
-        if remaining_unprocessed > 0 and (stopped_daily_limit or stopped_hourly_limit):
+        if trimmed_for_window or remaining_ready > 0:
+            carryover_rows: list[dict] = []
+            if remaining_ready > 0:
+                carryover_rows.extend(ready_rows[-remaining_ready:])
+            if waiting_rows:
+                carryover_rows.extend(waiting_rows)
+            _write_final_queue_rows(campaign_id, fieldnames, carryover_rows)
+
+        upload_stats = _upload_run_outputs(campaign_id)
+
+        if waiting_rows or (remaining_unprocessed > 0 and (stopped_daily_limit or stopped_hourly_limit)):
             result_path = _write_cloud_result(
                 campaign_id,
                 status="partial",
                 error_message=(
-                    "daily_cap_reached"
-                    if stopped_daily_limit
-                    else "hourly_cap_reached"
+                    "market_window"
+                    if waiting_rows and not (stopped_daily_limit or stopped_hourly_limit)
+                    else (
+                        "daily_cap_reached"
+                        if stopped_daily_limit
+                        else "hourly_cap_reached"
+                    )
                 ),
             )
             _upload_file(
                 result_path,
                 f"{_bucket_uri(GCS_RUNS_PREFIX, campaign_id).rstrip('/')}/cloud_send_result.json",
             )
+            next_due_utc = next_market_due
+            wait_reason = "market_window"
+            if stopped_daily_limit or stopped_hourly_limit:
+                wait_reason = "daily_cap_reached" if stopped_daily_limit else "hourly_cap_reached"
             return {
                 "completed": False,
                 "processed_manifest_uri": "",
                 "upload_stats": upload_stats,
                 "send_summary": send_summary,
-                "wait_reason": "daily_cap_reached" if stopped_daily_limit else "hourly_cap_reached",
+                "wait_reason": wait_reason,
                 "remaining_unprocessed": remaining_unprocessed,
+                "next_due_utc": next_due_utc,
             }
 
         processed_uri = _mark_manifest_processed(manifest_uri, campaign_id)
@@ -817,6 +900,7 @@ def _process_campaign(
             "send_summary": send_summary,
             "wait_reason": "",
             "remaining_unprocessed": 0,
+            "next_due_utc": None,
         }
     finally:
         clear_active_run()
@@ -1222,8 +1306,14 @@ def run_worker(poll_seconds: float = CLOUD_WORKER_POLL_SECONDS) -> None:
                 )
             else:
                 capacity_after = _build_inbox_capacity_snapshot(datetime.now(tz=timezone.utc))
-                next_due_after = capacity_after.get("next_capacity_utc") or datetime.now(tz=timezone.utc)
+                process_due_after = process_result.get("next_due_utc")
+                capacity_due_after = capacity_after.get("next_capacity_utc")
+                next_due_after = process_due_after or capacity_due_after or datetime.now(tz=timezone.utc)
                 wait_reason_after = str(process_result.get("wait_reason") or capacity_after.get("capacity_reason") or "capacity_hold")
+                if isinstance(process_due_after, datetime) and isinstance(capacity_due_after, datetime):
+                    if capacity_due_after > process_due_after:
+                        next_due_after = capacity_due_after
+                        wait_reason_after = str(capacity_after.get("capacity_reason") or wait_reason_after)
                 remaining_after = int(process_result.get("remaining_unprocessed") or 0)
                 sync_cloud_send_status(
                     campaign_id,

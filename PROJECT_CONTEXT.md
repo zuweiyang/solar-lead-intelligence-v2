@@ -3854,3 +3854,22 @@ Related control-panel hardening:
   - supporting consistency note:
     - `queue_runner._job_to_config(...)` carries `auto_cloud_deploy`
     - campaign-state config serialization keeps `auto_cloud_deploy` visible in run state
+- 2026-03-25: Clarified and fixed the cloud-worker send-window behavior so deploy time and send time are separated correctly.
+  - operator expectation confirmed: runs should be deployable to cloud at **any** time; cloud worker should be responsible for waiting until the correct market-local send window before entering Workflow 7
+  - root issue:
+    - rows were still reaching Workflow 7 outside the Brazil market window
+    - Workflow 7 then logged them as `deferred` with `Outside target-market send window ...`
+    - this mixed up *deploy accepted* with *send eligible now*
+  - fix in `scripts/cloud_send_worker.py`:
+    - added a pre-send partition step over each run's `final_send_queue.csv`
+    - rows that are eligible **right now** are separated from rows still waiting for the next local send window
+    - if no rows are currently eligible, the worker keeps the campaign in `waiting_window` and does **not** enter Workflow 7
+    - if some rows are eligible and some are not:
+      - only the eligible subset is sent now
+      - the waiting subset stays in `final_send_queue.csv` for a later cloud retry
+    - market-window waits and inbox-capacity waits are now merged by choosing the later due time when both apply
+  - intended result:
+    - deploy anytime
+    - cloud queues anytime
+    - send only when market-local window is open
+    - rows should no longer be deferred **just because** they were processed outside the target-market send window
