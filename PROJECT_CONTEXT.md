@@ -3879,3 +3879,7 @@ Related control-panel hardening:
   - result: queue counts like `49`, `72`, `108`, `117` were inflated and did not match actual sendable record counts
   - fix: `ui_state._count_csv()` now counts parsed CSV records via `csv.DictReader`
   - effect: Ready To Deploy / reconciliation queue counts should now align with actual email record counts and with `send_batch_summary.total`
+- 2026-03-25: Increased default daily email caps from `50` to `100`.
+  - updated `DAILY_EMAIL_LIMIT` default to `100`
+  - updated `CLOUD_SEND_INBOX_DAILY_LIMIT` fallback to `100`
+  - updated `.env.example` to document the new `100/day` default
