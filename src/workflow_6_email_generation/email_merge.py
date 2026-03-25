@@ -90,6 +90,10 @@ def _is_trusted_contact(row: dict) -> bool:
     return (row.get("contact_trust") or "").strip().lower() == "trusted"
 
 
+def _is_guess_source(row: dict) -> bool:
+    return (row.get("enrichment_source") or "").strip().lower() == "guessed"
+
+
 def _has_relevant_title(title: str) -> bool:
     lower = (title or "").strip().lower()
     if not lower:
@@ -290,6 +294,9 @@ def _fallback_contact_from_lead(lead: dict) -> dict | None:
     if not email or "@" not in email:
         return None
 
+    if _is_guess_source(lead):
+        return None
+
     is_generic = _as_bool(lead.get("is_generic_mailbox", "")) or _is_generic_email(email)
     if is_generic:
         return {
@@ -342,6 +349,7 @@ def _route_contact(lead: dict, contacts_by_company: dict[str, list[dict]]) -> di
     Rules:
     - named contact wins when available
     - generic mailbox is used only when no named contact is usable
+    - guessed contacts are never used for first-touch sending
     - no usable contact => company is not queued for email generation
     """
     key = _company_key(lead)
@@ -352,12 +360,14 @@ def _route_contact(lead: dict, contacts_by_company: dict[str, list[dict]]) -> di
         if (row.get("kp_name") or "").strip()
         and (row.get("kp_email") or "").strip()
         and not (_as_bool(row.get("is_generic_mailbox", "")) or _is_generic_email(row.get("kp_email", "")))
+        and not _is_guess_source(row)
         and _is_sendable_contact(row)
     ]
     generic_contacts = [
         row for row in contacts
         if (row.get("kp_email") or "").strip()
         and (_as_bool(row.get("is_generic_mailbox", "")) or _is_generic_email(row.get("kp_email", "")))
+        and not _is_guess_source(row)
         and _is_sendable_contact(row)
     ]
 
@@ -430,7 +440,7 @@ def _send_tier(target_tier: str, enrichment_source: str, kp_email: str) -> str:
     if target_tier == "A":
         if named: return "A"
         if site:  return "B1"
-        return "B2"    # guessed email, high-confidence type
+        return "C"
 
     if target_tier == "B":
         if named: return "B1"

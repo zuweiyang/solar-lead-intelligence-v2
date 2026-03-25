@@ -3893,3 +3893,4 @@ Related control-panel hardening:
   - intended UX: if an operator clicks delete, the selected job is deleted even if it is currently marked `running`
 - Queue runner stale-PID handling is now stricter on Windows: `scheduler.pid` is auto-cleared when `tasklist` returns an error / missing process, so the UI no longer shows `Scheduler — Active` for a dead runner.
 - Queue job removal cleanup is now more complete: removing a running job clears stale scheduler pid state, clears `campaign_run.lock`, marks global active campaign state failed, and also marks the campaign-scoped `data/runs/<campaign_id>/campaign_run_state.json` as removed when present.
+- 2026-03-25: Workflow 6 first-touch routing now hard-blocks `guessed` contacts. `Apollo`, `Hunter`, and `website` contacts can still enter `final_send_queue`, but guessed emails remain enrichment-only and are never selected as named, generic, or fallback send targets.
