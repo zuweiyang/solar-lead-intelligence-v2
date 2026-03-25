@@ -66,13 +66,23 @@ def _campaign_next_due(campaign_id: str) -> tuple[datetime, dict]:
     return due, ctx
 
 
-def _run_campaign_send(campaign_id: str) -> None:
+def _run_campaign_send(
+    campaign_id: str,
+    *,
+    daily_limit_override: int | None = None,
+    hourly_limit_override: int | None = None,
+) -> tuple[dict, dict]:
     print(f"\n[AutoSend] Launching gmail_api send for {campaign_id}")
     set_active_run(campaign_id)
     original_mode = os.environ.get("EMAIL_SEND_MODE")
     os.environ["EMAIL_SEND_MODE"] = "gmail_api"
     try:
-        send_summary = run_send(campaign_id=campaign_id, send_mode="gmail_api")
+        send_summary = run_send(
+            campaign_id=campaign_id,
+            send_mode="gmail_api",
+            daily_limit_override=daily_limit_override,
+            hourly_limit_override=hourly_limit_override,
+        )
         status_summary = run_status(campaign_id=campaign_id)
     finally:
         clear_active_run()
@@ -89,6 +99,7 @@ def _run_campaign_send(campaign_id: str) -> None:
         )
     print(f"[AutoSend] Send summary for {campaign_id}: {send_summary}")
     print(f"[AutoSend] Status summary updated for {campaign_id}: {status_summary}")
+    return send_summary, status_summary
 
 
 def run_auto_send(campaign_ids: list[str], poll_seconds: float = 60.0) -> None:

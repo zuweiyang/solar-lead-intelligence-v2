@@ -3793,3 +3793,47 @@ Related control-panel hardening:
   - `app.py` no longer renders `render_kpi_dashboard()` on every page load
   - operators must explicitly enable **Show KPI Dashboard** to render KPI metrics
   - intent: cut down unnecessary file reads and cloud-status reconciliation work during queue/deploy operations, since KPI was not critical for short-term operations
+- 2026-03-25: Local development `.env` now explicitly sets `CLOUD_SEND_ENABLED=true`.
+  - purpose: when `send_mode=gmail_api` and an operator selects **Auto Upload To Cloud After Completion**, the local Streamlit control panel can actually enable the auto-handoff checkbox instead of hard-disabling it behind the global gate
+  - `dry_run` remains protected: dry-run runs still cannot auto-upload because both the UI and Workflow 9 runtime continue to block cloud handoff for dry-run campaigns
+- 2026-03-25: Low-frequency lower-page panels are now hidden by default behind **Show Advanced Panels**.
+  - moved off the default render path:
+    - `Manual Review Queue`
+    - `Runner Logs`
+    - `High Priority Leads`
+    - `Company Lifecycle Detail`
+    - `Manual Action: Send followup_1`
+    - `Campaign Status Table`
+    - `Pipeline / Enhanced File Status`
+  - intent: keep the main control surface focused on configuration, queue, current state, and deploy actions, while reducing rerender cost during normal operations
+- 2026-03-25: Queue progress feedback was simplified from a live progress bar to lightweight text status.
+  - `ui_views.py` no longer renders `st.progress(...)` for the active queue job on every refresh
+  - the queue panel now shows a compact text-only workflow-step label such as `Workflow step: 3/12 scrape`
+  - intent: keep operators informed about the current pipeline stage while reducing rerender cost and the slow/white-flash feeling during queue refreshes
+- 2026-03-25: Started implementing cloud-worker send-capacity scheduling so inbox throttling becomes visible and enforceable at the worker layer instead of being implicit inside a single Workflow 7 batch.
+  - new cloud settings were added in `config/settings.py`:
+    - `CLOUD_SEND_INBOX_DAILY_LIMIT`
+    - `CLOUD_SEND_INBOX_HOURLY_LIMIT`
+    - `CLOUD_SEND_SKIP_WEEKENDS`
+    - `CLOUD_SEND_CAP_TIMEZONE`
+  - `send_pipeline.run(...)` now accepts optional `daily_limit_override` / `hourly_limit_override` values and records:
+    - `processed`
+    - `remaining_unprocessed`
+    - `stopped_daily_limit`
+    - `stopped_hourly_limit`
+  - `scripts/auto_send_runs._run_campaign_send(...)` now returns `(send_summary, status_summary)` and forwards the per-run cap overrides down into Workflow 7
+  - `scripts/cloud_send_worker.py` now:
+    - calculates an inbox-capacity snapshot from global CRM `send_logs.csv`
+    - tracks sent-today / remaining-today / sent-last-hour / remaining-this-hour in worker state
+    - tracks live waiting email counts across inflight + manifest backlog
+    - keeps weekend sending disabled through the worker-level scheduler when `CLOUD_SEND_SKIP_WEEKENDS=true`
+    - prepares to leave inflight campaigns in place when a send batch hits the daily/hourly cap instead of immediately treating the campaign as fully completed
+  - `ui_state.load_cloud_worker_health()` now exposes the new worker-capacity fields to the UI
+  - `render_campaign_state_view()` now shows a lightweight always-visible `Cloud Send Capacity` block with:
+    - inbox sent today
+    - remaining today
+    - sent last hour
+    - remaining this hour
+    - live cloud emails waiting / backlog / inflight
+    - next capacity slot / carryover email count
+  - status note: this send-capacity feature set is implemented in the local workspace but has **not yet been pushed or deployed to the VM** in this pass, and no local Python compile/test run was possible because the current shell session did not expose a runnable Python interpreter

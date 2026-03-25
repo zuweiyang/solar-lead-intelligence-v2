@@ -189,9 +189,18 @@ def _lookup_policy(
     return None
 
 
-def run(limit: int = 0, campaign_id: str = "", send_mode: str = "") -> dict:
+def run(
+    limit: int = 0,
+    campaign_id: str = "",
+    send_mode: str = "",
+    daily_limit_override: int | None = None,
+    hourly_limit_override: int | None = None,
+) -> dict:
     """
     Run one send batch.
+
+    Limit overrides let the cloud worker respect the remaining inbox capacity
+    for the current day/hour instead of only the static process defaults.
     """
     records = load_send_queue(limit=limit)
     if not records:
@@ -207,10 +216,21 @@ def run(limit: int = 0, campaign_id: str = "", send_mode: str = "") -> dict:
         print(f"[Workflow 7] DB unavailable for breaker checks (non-fatal): {exc}")
 
     effective_mode = send_mode or EMAIL_SEND_MODE
+    effective_daily_limit = (
+        int(daily_limit_override)
+        if daily_limit_override is not None and int(daily_limit_override) > 0
+        else DAILY_EMAIL_LIMIT
+    )
+    effective_hourly_limit = (
+        int(hourly_limit_override)
+        if hourly_limit_override is not None and int(hourly_limit_override) > 0
+        else SEND_HOURLY_LIMIT
+    )
     mode_str = effective_mode.upper()
     print(
         f"[Workflow 7] Starting send batch - mode: {mode_str} | "
-        f"records: {len(records)} | daily limit: {DAILY_EMAIL_LIMIT} | "
+        f"records: {len(records)} | daily limit: {effective_daily_limit} | "
+        f"hourly limit: {effective_hourly_limit} | "
         f"campaign: {campaign_id or 'unknown'}"
     )
 
@@ -260,6 +280,9 @@ def run(limit: int = 0, campaign_id: str = "", send_mode: str = "") -> dict:
         "policy_match_place_id": 0,
         "policy_match_email": 0,
         "policy_match_company": 0,
+        "processed": 0,
+        "remaining_unprocessed": 0,
+        "stopped_daily_limit": 0,
         "stopped_hourly_limit": 0,
     }
     now = datetime.now(tz=timezone.utc)
@@ -268,20 +291,21 @@ def run(limit: int = 0, campaign_id: str = "", send_mode: str = "") -> dict:
         name = record.get("company_name") or record.get("website", f"record {i}")
 
         slots_used = counters["sent"] + counters["dry_run"]
-        if slots_used >= DAILY_EMAIL_LIMIT:
-            print(f"[Workflow 7] Daily limit {DAILY_EMAIL_LIMIT} reached - stopping.")
+        if effective_daily_limit > 0 and slots_used >= effective_daily_limit:
+            counters["stopped_daily_limit"] = 1
+            print(f"[Workflow 7] Daily limit {effective_daily_limit} reached - stopping.")
             break
 
-        if SEND_HOURLY_LIMIT > 0:
+        if effective_hourly_limit > 0:
             recent_hour_logs = load_recent_logs(hours=1)
             hourly_used = _count_hourly_send_slots(
                 recent_hour_logs + live_log,
                 effective_mode=effective_mode,
             )
-            if hourly_used >= SEND_HOURLY_LIMIT:
+            if hourly_used >= effective_hourly_limit:
                 counters["stopped_hourly_limit"] = 1
                 print(
-                    f"[Workflow 7] Hourly limit {SEND_HOURLY_LIMIT} reached - stopping batch "
+                    f"[Workflow 7] Hourly limit {effective_hourly_limit} reached - stopping batch "
                     f"to spread sending and reduce provider risk."
                 )
                 break
@@ -332,6 +356,7 @@ def run(limit: int = 0, campaign_id: str = "", send_mode: str = "") -> dict:
                 send_policy_reason=policy_reason,
             )
             append_send_log(log_row)
+            counters["processed"] += 1
             print(f"[Workflow 7]   POLICY BLOCKED - {name} ({policy_reason})")
             continue
 
@@ -349,6 +374,7 @@ def run(limit: int = 0, campaign_id: str = "", send_mode: str = "") -> dict:
                 send_policy_reason=policy_reason,
             )
             append_send_log(log_row)
+            counters["processed"] += 1
             print(f"[Workflow 7]   POLICY HELD - {name} ({policy_reason})")
             continue
 
@@ -397,6 +423,7 @@ def run(limit: int = 0, campaign_id: str = "", send_mode: str = "") -> dict:
                 send_policy_reason=policy_reason,
             )
             append_send_log(log_row)
+            counters["processed"] += 1
             continue
 
         tracking_id = generate_tracking_id(record) if _TRACKING_AVAILABLE else ""
@@ -452,12 +479,15 @@ def run(limit: int = 0, campaign_id: str = "", send_mode: str = "") -> dict:
             send_policy_reason=policy_reason,
         )
         append_send_log(log_row)
+        counters["processed"] += 1
 
         if status in {"sent", "dry_run"}:
             live_log.append(log_row)
 
     if conn:
         conn.close()
+
+    counters["remaining_unprocessed"] = max(counters["total"] - counters["processed"], 0)
 
     print(
         f"\n[Workflow 7] Batch complete:\n"
@@ -469,6 +499,8 @@ def run(limit: int = 0, campaign_id: str = "", send_mode: str = "") -> dict:
         f"  Review required : {counters['review_required']}\n"
         f"  Held            : {counters['held']}\n"
         f"  Deferred        : {counters['deferred']}\n"
+        f"  Processed       : {counters['processed']}\n"
+        f"  Remaining       : {counters['remaining_unprocessed']}\n"
         f"  Breaker-blocked : {counters['breaker_blocked']}\n"
         f"  Policy breakdown:\n"
         f"    queue_normal  : {counters['policy_queue_normal']}\n"
@@ -484,6 +516,7 @@ def run(limit: int = 0, campaign_id: str = "", send_mode: str = "") -> dict:
         f"    by place_id   : {counters['policy_match_place_id']}\n"
         f"    by kp_email   : {counters['policy_match_email']}\n"
         f"    by company    : {counters['policy_match_company']}\n"
+        f"  Daily cap stop  : {counters['stopped_daily_limit']}\n"
         f"  Hourly cap stop : {counters['stopped_hourly_limit']}"
     )
 
@@ -515,6 +548,9 @@ def _empty_summary() -> dict:
             "policy_match_place_id",
             "policy_match_email",
             "policy_match_company",
+            "processed",
+            "remaining_unprocessed",
+            "stopped_daily_limit",
             "stopped_hourly_limit",
         )
     }

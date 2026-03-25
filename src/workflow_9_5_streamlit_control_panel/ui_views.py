@@ -1108,6 +1108,7 @@ def render_campaign_state_view() -> None:
     log.ui("render_campaign_state_view()")
     st.header("Current Campaign State")
     state = load_current_campaign_state()
+    worker = load_cloud_worker_health()
 
     if not state:
         log.state("No campaign state file found")
@@ -1175,6 +1176,34 @@ def render_campaign_state_view() -> None:
             cfg = state.get("config", {})
             if cfg:
                 st.json(cfg)
+
+    if worker:
+        st.subheader("Cloud Send Capacity")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Inbox Sent Today", worker.get("inbox_sent_today", 0))
+        c2.metric("Remaining Today", worker.get("inbox_remaining_today", 0))
+        c3.metric("Sent Last Hour", worker.get("inbox_sent_last_hour", 0))
+        c4.metric("Remaining This Hour", worker.get("inbox_remaining_this_hour", 0))
+
+        c5, c6, c7 = st.columns(3)
+        c5.metric("Cloud Emails Waiting", worker.get("last_live_email_count", 0))
+        c6.metric("Manifest Backlog Emails", worker.get("last_manifest_email_count", 0))
+        c7.metric("Inflight Emails", worker.get("last_inflight_email_count", 0))
+
+        weekend_mode = "OFF on Sat/Sun" if not worker.get("weekend_sending_enabled", True) else "Enabled"
+        next_capacity_due = worker.get("next_capacity_due_at") or "available now"
+        next_capacity_reason = worker.get("next_capacity_reason") or "within caps"
+        st.caption(
+            f"Worker inbox timezone: {worker.get('inbox_cap_timezone') or 'UTC'} | "
+            f"Daily cap: {worker.get('inbox_daily_cap', 0)} | "
+            f"Hourly cap: {worker.get('inbox_hourly_cap', 0)} | "
+            f"Weekend sending: {weekend_mode}"
+        )
+        st.caption(
+            f"Next capacity slot: {next_capacity_due} | "
+            f"Reason: {next_capacity_reason} | "
+            f"Carryover emails: {worker.get('last_carryover_email_count', 0)}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -2188,13 +2217,9 @@ def _render_queue_panel_content() -> None:
                 step = _get_running_job_step(cid)
                 if step and step in PIPELINE_STEPS:
                     idx = PIPELINE_STEPS.index(step)
-                    progress = (idx + 1) / len(PIPELINE_STEPS)
-                    st.progress(progress, text=f"Step {idx + 1}/{len(PIPELINE_STEPS)}: `{step}`")
+                    st.caption(f"Workflow step: {idx + 1}/{len(PIPELINE_STEPS)} `{step}`")
                 else:
-                    st.progress(
-                        0.02,
-                        text="Job claimed by runner. Waiting for the first workflow step to be logged...",
-                    )
+                    st.caption("Workflow step: claimed by runner, waiting for the first workflow step to be logged.")
                     st.caption(
                         "This short gap is normal: the queue job has started, but `campaign_runner_logs.csv` has not written its first step yet."
                     )

@@ -19,10 +19,11 @@ import sys
 import tempfile
 import time
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from email.utils import formataddr
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 os.environ.setdefault("PYTHONUTF8", "1")
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
@@ -40,6 +41,10 @@ from config.settings import (
     CLOUD_WORKER_ALERT_EMAIL_TO,
     CLOUD_WORKER_ALERT_SUBJECT_PREFIX,
     CLOUD_WORKER_ALERT_WEBHOOK,
+    CLOUD_SEND_CAP_TIMEZONE,
+    CLOUD_SEND_INBOX_DAILY_LIMIT,
+    CLOUD_SEND_INBOX_HOURLY_LIMIT,
+    CLOUD_SEND_SKIP_WEEKENDS,
     CLOUD_WORKER_POLL_SECONDS,
     DATA_DIR,
     GCS_BUCKET,
@@ -57,6 +62,7 @@ from config.settings import (
     SMTP_PORT,
     SMTP_USERNAME,
     SMTP_USE_TLS,
+    SEND_LOGS_FILE,
 )
 from src.workflow_9_campaign_runner.campaign_state import (
     CLOUD_DEPLOY_COMPLETED,
@@ -201,6 +207,20 @@ def _load_state() -> dict:
             state.setdefault("worker_config_issue", "")
             state.setdefault("worker_bucket", GCS_BUCKET)
             state.setdefault("worker_manifests_prefix", GCS_MANIFESTS_PREFIX)
+            state.setdefault("inbox_cap_timezone", CLOUD_SEND_CAP_TIMEZONE or "UTC")
+            state.setdefault("inbox_daily_cap", int(CLOUD_SEND_INBOX_DAILY_LIMIT or 0))
+            state.setdefault("inbox_hourly_cap", int(CLOUD_SEND_INBOX_HOURLY_LIMIT or 0))
+            state.setdefault("inbox_sent_today", 0)
+            state.setdefault("inbox_remaining_today", 0)
+            state.setdefault("inbox_sent_last_hour", 0)
+            state.setdefault("inbox_remaining_this_hour", 0)
+            state.setdefault("weekend_sending_enabled", not CLOUD_SEND_SKIP_WEEKENDS)
+            state.setdefault("next_capacity_due_at", "")
+            state.setdefault("next_capacity_reason", "")
+            state.setdefault("last_live_email_count", 0)
+            state.setdefault("last_manifest_email_count", 0)
+            state.setdefault("last_inflight_email_count", 0)
+            state.setdefault("last_carryover_email_count", 0)
             return state
     except Exception:
         return {"completed_campaigns": [], "failed_campaigns": [], "synced_manifests": {}}
@@ -371,6 +391,111 @@ def _record_alert(
 def _update_worker_state(state: dict, **updates: object) -> None:
     state.update(updates)
     _save_state(state)
+
+
+def _parse_dt(value: str) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _send_log_rows() -> list[dict]:
+    if not SEND_LOGS_FILE.exists():
+        return []
+    try:
+        import csv
+
+        with open(SEND_LOGS_FILE, newline="", encoding="utf-8") as f:
+            return list(csv.DictReader(f))
+    except Exception:
+        return []
+
+
+def _next_weekday_start(local_now: datetime) -> datetime:
+    cursor = local_now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+    while cursor.weekday() >= 5:
+        cursor += timedelta(days=1)
+    return cursor
+
+
+def _build_inbox_capacity_snapshot(now_utc: datetime) -> dict[str, object]:
+    tz_name = CLOUD_SEND_CAP_TIMEZONE or "UTC"
+    cap_tz = ZoneInfo(tz_name)
+    local_now = now_utc.astimezone(cap_tz)
+    rows = _send_log_rows()
+
+    sent_rows: list[datetime] = []
+    for row in rows:
+        if str(row.get("send_status") or "").strip().lower() != "sent":
+            continue
+        ts = _parse_dt(row.get("timestamp") or "")
+        if not ts:
+            continue
+        sent_rows.append(ts.astimezone(cap_tz))
+
+    today_rows = [ts for ts in sent_rows if ts.date() == local_now.date()]
+    one_hour_ago = local_now - timedelta(hours=1)
+    hour_rows = [ts for ts in sent_rows if ts >= one_hour_ago]
+
+    sent_today = len(today_rows)
+    sent_last_hour = len(hour_rows)
+    daily_cap = max(int(CLOUD_SEND_INBOX_DAILY_LIMIT or 0), 0)
+    hourly_cap = max(int(CLOUD_SEND_INBOX_HOURLY_LIMIT or 0), 0)
+    remaining_today = max(daily_cap - sent_today, 0) if daily_cap > 0 else 999999
+    remaining_this_hour = max(hourly_cap - sent_last_hour, 0) if hourly_cap > 0 else 999999
+
+    next_capacity_local: datetime | None = None
+    capacity_reason = ""
+
+    if CLOUD_SEND_SKIP_WEEKENDS and local_now.weekday() >= 5:
+        next_capacity_local = _next_weekday_start(local_now)
+        capacity_reason = "weekend_hold"
+    elif daily_cap > 0 and sent_today >= daily_cap:
+        next_capacity_local = _next_weekday_start(local_now) if CLOUD_SEND_SKIP_WEEKENDS else (
+            local_now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        )
+        capacity_reason = "daily_cap_reached"
+    elif hourly_cap > 0 and sent_last_hour >= hourly_cap:
+        oldest_hour_send = min(hour_rows) if hour_rows else local_now
+        next_capacity_local = oldest_hour_send + timedelta(hours=1)
+        if CLOUD_SEND_SKIP_WEEKENDS and next_capacity_local.weekday() >= 5:
+            next_capacity_local = _next_weekday_start(next_capacity_local)
+        capacity_reason = "hourly_cap_reached"
+
+    return {
+        "cap_timezone": tz_name,
+        "local_now": local_now,
+        "daily_cap": daily_cap,
+        "hourly_cap": hourly_cap,
+        "sent_today": sent_today,
+        "sent_last_hour": sent_last_hour,
+        "remaining_today": remaining_today if daily_cap > 0 else None,
+        "remaining_this_hour": remaining_this_hour if hourly_cap > 0 else None,
+        "weekend_hold": bool(CLOUD_SEND_SKIP_WEEKENDS),
+        "next_capacity_utc": next_capacity_local.astimezone(timezone.utc) if next_capacity_local else None,
+        "next_capacity_local": next_capacity_local,
+        "capacity_reason": capacity_reason,
+    }
+
+
+def _send_summary_processed_count(summary: dict) -> int:
+    keys = (
+        "sent",
+        "dry_run",
+        "failed",
+        "blocked",
+        "review_required",
+        "held",
+        "deferred",
+    )
+    return sum(int(summary.get(key) or 0) for key in keys)
 
 
 def _config_issue_message() -> str:
@@ -605,7 +730,14 @@ def _write_cloud_result(
     return result_path
 
 
-def _process_campaign(campaign_id: str, manifest_uri: str, ctx: dict) -> str:
+def _process_campaign(
+    campaign_id: str,
+    manifest_uri: str,
+    ctx: dict,
+    *,
+    daily_limit_override: int | None = None,
+    hourly_limit_override: int | None = None,
+) -> dict[str, object]:
     print(f"[CloudWorker] Preparing campaign {campaign_id}")
     sync_cloud_send_status(
         campaign_id,
@@ -619,12 +751,43 @@ def _process_campaign(campaign_id: str, manifest_uri: str, ctx: dict) -> str:
     )
     set_active_run(campaign_id)
     try:
-        _run_campaign_send(campaign_id)
-        _write_cloud_result(
+        send_summary, _status_summary = _run_campaign_send(
             campaign_id,
-            status=CLOUD_SEND_COMPLETED,
+            daily_limit_override=daily_limit_override,
+            hourly_limit_override=hourly_limit_override,
         )
         upload_stats = _upload_run_outputs(campaign_id)
+        processed_count = _send_summary_processed_count(send_summary)
+        remaining_unprocessed = max(
+            int(send_summary.get("remaining_unprocessed") or 0),
+            max(int(send_summary.get("total") or 0) - processed_count, 0),
+        )
+        stopped_daily_limit = bool(int(send_summary.get("stopped_daily_limit") or 0))
+        stopped_hourly_limit = bool(int(send_summary.get("stopped_hourly_limit") or 0))
+
+        if remaining_unprocessed > 0 and (stopped_daily_limit or stopped_hourly_limit):
+            result_path = _write_cloud_result(
+                campaign_id,
+                status="partial",
+                error_message=(
+                    "daily_cap_reached"
+                    if stopped_daily_limit
+                    else "hourly_cap_reached"
+                ),
+            )
+            _upload_file(
+                result_path,
+                f"{_bucket_uri(GCS_RUNS_PREFIX, campaign_id).rstrip('/')}/cloud_send_result.json",
+            )
+            return {
+                "completed": False,
+                "processed_manifest_uri": "",
+                "upload_stats": upload_stats,
+                "send_summary": send_summary,
+                "wait_reason": "daily_cap_reached" if stopped_daily_limit else "hourly_cap_reached",
+                "remaining_unprocessed": remaining_unprocessed,
+            }
+
         processed_uri = _mark_manifest_processed(manifest_uri, campaign_id)
         result_path = _write_cloud_result(
             campaign_id,
@@ -647,7 +810,14 @@ def _process_campaign(campaign_id: str, manifest_uri: str, ctx: dict) -> str:
                 "cloud_send_upload_elapsed_seconds": upload_stats["elapsed_seconds"],
             },
         )
-        return processed_uri
+        return {
+            "completed": True,
+            "processed_manifest_uri": processed_uri,
+            "upload_stats": upload_stats,
+            "send_summary": send_summary,
+            "wait_reason": "",
+            "remaining_unprocessed": 0,
+        }
     finally:
         clear_active_run()
 
@@ -660,6 +830,7 @@ def run_worker(poll_seconds: float = CLOUD_WORKER_POLL_SECONDS) -> None:
 
     while True:
         now_utc = datetime.now(tz=timezone.utc)
+        capacity = _build_inbox_capacity_snapshot(now_utc)
         _reconcile_local_deploy_statuses()
         config_issue = _config_issue_message()
         _update_worker_state(
@@ -669,6 +840,25 @@ def run_worker(poll_seconds: float = CLOUD_WORKER_POLL_SECONDS) -> None:
             worker_manifests_prefix=GCS_MANIFESTS_PREFIX,
             worker_config_ok=(config_issue == ""),
             worker_config_issue=config_issue,
+            inbox_cap_timezone=str(capacity.get("cap_timezone") or "UTC"),
+            inbox_daily_cap=int(capacity.get("daily_cap") or 0),
+            inbox_hourly_cap=int(capacity.get("hourly_cap") or 0),
+            inbox_sent_today=int(capacity.get("sent_today") or 0),
+            inbox_remaining_today=(
+                int(capacity.get("remaining_today") or 0)
+                if capacity.get("remaining_today") is not None else -1
+            ),
+            inbox_sent_last_hour=int(capacity.get("sent_last_hour") or 0),
+            inbox_remaining_this_hour=(
+                int(capacity.get("remaining_this_hour") or 0)
+                if capacity.get("remaining_this_hour") is not None else -1
+            ),
+            weekend_sending_enabled=not bool(CLOUD_SEND_SKIP_WEEKENDS),
+            next_capacity_due_at=(
+                capacity["next_capacity_utc"].isoformat()
+                if capacity.get("next_capacity_utc") else ""
+            ),
+            next_capacity_reason=str(capacity.get("capacity_reason") or ""),
         )
         if config_issue:
             _update_worker_state(
@@ -715,6 +905,8 @@ def run_worker(poll_seconds: float = CLOUD_WORKER_POLL_SECONDS) -> None:
                 last_poll_result="no_manifests",
                 last_candidate_count=0,
                 last_candidate_campaign_ids=[],
+                last_wait_campaign_id="",
+                last_wait_due_at="",
                 last_selected_campaign_id="",
                 last_selected_due_at="",
                 claimed_campaign_id="",
@@ -725,7 +917,9 @@ def run_worker(poll_seconds: float = CLOUD_WORKER_POLL_SECONDS) -> None:
 
         inflight_candidates: list[tuple[datetime, str, str, dict]] = []
         visible_candidates: list[tuple[datetime, str, str, dict]] = []
-        source_manifest_uris = inflight_manifest_uris or manifest_uris
+        inflight_email_count = 0
+        manifest_email_count = 0
+        source_manifest_uris = [*inflight_manifest_uris, *manifest_uris]
 
         for manifest_uri in source_manifest_uris:
             try:
@@ -771,12 +965,15 @@ def run_worker(poll_seconds: float = CLOUD_WORKER_POLL_SECONDS) -> None:
                     manifest_uri=manifest_uri,
                 )
                 continue
-            if campaign_id in completed:
-                print(f"[CloudWorker] Campaign already completed locally, skipping manifest: {campaign_id}")
-                continue
-            if campaign_id in failed:
-                print(f"[CloudWorker] Campaign previously failed, skipping until manual recovery: {campaign_id}")
-                continue
+            # Do not short-circuit purely on the worker's historical memory of
+            # completed/failed campaigns. A campaign may be re-deployed with the
+            # same campaign_id after operator recovery, which creates a fresh
+            # manifest and resets run-scoped cloud_send_status to queued.
+            #
+            # True stale completed/failed manifests are already handled by
+            # _reconcile_manifest_with_run_state() above; if that returned False,
+            # the current run state is not terminal and this manifest should be
+            # allowed back through candidate preparation.
 
             try:
                 _, did_sync = _ensure_run_synced(campaign_id, manifest_uri, manifest, state)
@@ -842,10 +1039,21 @@ def run_worker(poll_seconds: float = CLOUD_WORKER_POLL_SECONDS) -> None:
                 )
                 continue
 
-            if inflight_manifest_uris:
+            queue_count = int(ctx.get("queue_count") or 0)
+            if manifest_uri in inflight_manifest_uris:
+                inflight_email_count += queue_count
                 inflight_candidates.append((due, campaign_id, manifest_uri, ctx))
             else:
+                manifest_email_count += queue_count
                 visible_candidates.append((due, campaign_id, manifest_uri, ctx))
+
+        _update_worker_state(
+            state,
+            last_inflight_email_count=inflight_email_count,
+            last_manifest_email_count=manifest_email_count,
+            last_live_email_count=inflight_email_count + manifest_email_count,
+            last_carryover_email_count=inflight_email_count + manifest_email_count,
+        )
 
         if inflight_manifest_uris and not inflight_candidates:
             print("[CloudWorker] No actionable inflight manifests found. Sleeping.")
@@ -855,6 +1063,8 @@ def run_worker(poll_seconds: float = CLOUD_WORKER_POLL_SECONDS) -> None:
                 last_poll_result="no_actionable_inflight_manifests",
                 last_candidate_count=0,
                 last_candidate_campaign_ids=[],
+                last_wait_campaign_id="",
+                last_wait_due_at="",
                 last_selected_campaign_id="",
                 last_selected_due_at="",
                 claimed_campaign_id="",
@@ -871,6 +1081,8 @@ def run_worker(poll_seconds: float = CLOUD_WORKER_POLL_SECONDS) -> None:
                 last_poll_result="no_actionable_manifests",
                 last_candidate_count=0,
                 last_candidate_campaign_ids=[],
+                last_wait_campaign_id="",
+                last_wait_due_at="",
                 last_selected_campaign_id="",
                 last_selected_due_at="",
                 claimed_campaign_id="",
@@ -879,11 +1091,11 @@ def run_worker(poll_seconds: float = CLOUD_WORKER_POLL_SECONDS) -> None:
             time.sleep(poll_seconds)
             continue
 
-        candidates = inflight_candidates if inflight_manifest_uris else visible_candidates
+        candidates = inflight_candidates if inflight_candidates else visible_candidates
         candidates.sort(key=lambda item: item[0])
         due, campaign_id, manifest_uri, ctx = candidates[0]
 
-        if not inflight_manifest_uris:
+        if not inflight_candidates:
             try:
                 manifest_uri = _claim_manifest(manifest_uri, campaign_id)
             except Exception as exc:
@@ -912,35 +1124,51 @@ def run_worker(poll_seconds: float = CLOUD_WORKER_POLL_SECONDS) -> None:
             claimed_manifest_uri=manifest_uri,
         )
         selection_now = datetime.now(tz=timezone.utc)
+        capacity_due = capacity.get("next_capacity_utc")
+        effective_due = due
+        wait_reason = "market_window"
+        if isinstance(capacity_due, datetime) and capacity_due > effective_due:
+            effective_due = capacity_due
+            wait_reason = str(capacity.get("capacity_reason") or "capacity_hold")
 
-        if due > selection_now:
-            wait_seconds = max((due - selection_now).total_seconds(), 0.0)
+        if effective_due > selection_now:
+            wait_seconds = max((effective_due - selection_now).total_seconds(), 0.0)
             capped_wait = min(wait_seconds, poll_seconds)
             sync_cloud_send_status(
                 campaign_id,
                 CLOUD_SEND_WAITING_WINDOW,
                 details={
                     "cloud_send_manifest_uri": manifest_uri,
-                    "cloud_send_due_at": due.isoformat(),
+                    "cloud_send_due_at": effective_due.isoformat(),
                     "cloud_send_wait_seconds": round(wait_seconds, 1),
                     "cloud_send_market": f"{ctx.get('city')}, {ctx.get('country')}".strip(", "),
                     "cloud_send_timezone": ctx.get("timezone", ""),
+                    "cloud_send_wait_reason": wait_reason,
+                    "cloud_send_inbox_daily_cap": int(capacity.get("daily_cap") or 0),
+                    "cloud_send_inbox_sent_today": int(capacity.get("sent_today") or 0),
+                    "cloud_send_inbox_remaining_today": int(capacity.get("remaining_today") or 0)
+                    if capacity.get("remaining_today") is not None else None,
+                    "cloud_send_inbox_hourly_cap": int(capacity.get("hourly_cap") or 0),
+                    "cloud_send_inbox_sent_last_hour": int(capacity.get("sent_last_hour") or 0),
+                    "cloud_send_inbox_remaining_this_hour": int(capacity.get("remaining_this_hour") or 0)
+                    if capacity.get("remaining_this_hour") is not None else None,
                 },
             )
             _update_worker_state(
                 state,
-                last_idle_reason="waiting_window",
+                last_idle_reason=wait_reason if wait_reason != "market_window" else "waiting_window",
                 last_wait_campaign_id=campaign_id,
-                last_wait_due_at=due.isoformat(),
-                last_poll_result="waiting_window",
+                last_wait_due_at=effective_due.isoformat(),
+                last_poll_result=wait_reason if wait_reason != "market_window" else "waiting_window",
                 last_selected_campaign_id=campaign_id,
-                last_selected_due_at=due.isoformat(),
+                last_selected_due_at=effective_due.isoformat(),
                 claimed_campaign_id=campaign_id,
                 claimed_manifest_uri=manifest_uri,
             )
             print(
-                f"[CloudWorker] Next campaign window: {campaign_id} at {due.isoformat()} UTC | "
+                f"[CloudWorker] Next campaign window: {campaign_id} at {effective_due.isoformat()} UTC | "
                 f"market={ctx.get('city')}, {ctx.get('country')} | tz={ctx.get('timezone')} | "
+                f"reason={wait_reason} | "
                 f"sleeping {capped_wait:.0f}s"
             )
             time.sleep(capped_wait)
@@ -955,29 +1183,78 @@ def run_worker(poll_seconds: float = CLOUD_WORKER_POLL_SECONDS) -> None:
                 last_wait_due_at="",
                 last_poll_result="sending",
                 last_selected_campaign_id=campaign_id,
-                last_selected_due_at=due.isoformat(),
+                last_selected_due_at=effective_due.isoformat(),
                 claimed_campaign_id=campaign_id,
                 claimed_manifest_uri=manifest_uri,
             )
-            processed_uri = _process_campaign(campaign_id, manifest_uri, ctx)
-            completed.add(campaign_id)
-            failed.discard(campaign_id)
-            state.setdefault("synced_manifests", {}).pop(campaign_id, None)
-            _update_worker_state(
-                state,
-                completed_campaigns=sorted(completed),
-                failed_campaigns=sorted(failed),
-                last_success_at=_now_utc(),
-                active_campaign_id="",
-                last_completed_campaign_id=campaign_id,
-                last_processed_manifest_uri=processed_uri,
-                last_idle_reason="",
-                last_poll_result="completed_campaign",
-                last_selected_campaign_id=campaign_id,
-                last_selected_due_at=due.isoformat(),
-                claimed_campaign_id="",
-                claimed_manifest_uri="",
+            process_result = _process_campaign(
+                campaign_id,
+                manifest_uri,
+                ctx,
+                daily_limit_override=(
+                    int(capacity.get("remaining_today") or 0)
+                    if capacity.get("remaining_today") is not None else None
+                ),
+                hourly_limit_override=(
+                    int(capacity.get("remaining_this_hour") or 0)
+                    if capacity.get("remaining_this_hour") is not None else None
+                ),
             )
+            if bool(process_result.get("completed")):
+                processed_uri = str(process_result.get("processed_manifest_uri") or "")
+                completed.add(campaign_id)
+                failed.discard(campaign_id)
+                state.setdefault("synced_manifests", {}).pop(campaign_id, None)
+                _update_worker_state(
+                    state,
+                    completed_campaigns=sorted(completed),
+                    failed_campaigns=sorted(failed),
+                    last_success_at=_now_utc(),
+                    active_campaign_id="",
+                    last_completed_campaign_id=campaign_id,
+                    last_processed_manifest_uri=processed_uri,
+                    last_idle_reason="",
+                    last_poll_result="completed_campaign",
+                    last_selected_campaign_id=campaign_id,
+                    last_selected_due_at=effective_due.isoformat(),
+                    claimed_campaign_id="",
+                    claimed_manifest_uri="",
+                )
+            else:
+                capacity_after = _build_inbox_capacity_snapshot(datetime.now(tz=timezone.utc))
+                next_due_after = capacity_after.get("next_capacity_utc") or datetime.now(tz=timezone.utc)
+                wait_reason_after = str(process_result.get("wait_reason") or capacity_after.get("capacity_reason") or "capacity_hold")
+                remaining_after = int(process_result.get("remaining_unprocessed") or 0)
+                sync_cloud_send_status(
+                    campaign_id,
+                    CLOUD_SEND_WAITING_WINDOW,
+                    details={
+                        "cloud_send_manifest_uri": manifest_uri,
+                        "cloud_send_due_at": next_due_after.isoformat(),
+                        "cloud_send_wait_seconds": max(
+                            round((next_due_after - datetime.now(tz=timezone.utc)).total_seconds(), 1),
+                            0.0,
+                        ),
+                        "cloud_send_market": f"{ctx.get('city')}, {ctx.get('country')}".strip(", "),
+                        "cloud_send_timezone": ctx.get("timezone", ""),
+                        "cloud_send_wait_reason": wait_reason_after,
+                        "cloud_send_remaining_records": remaining_after,
+                    },
+                )
+                _update_worker_state(
+                    state,
+                    last_success_at=_now_utc(),
+                    active_campaign_id="",
+                    last_idle_reason=wait_reason_after,
+                    last_poll_result=wait_reason_after,
+                    last_wait_campaign_id=campaign_id,
+                    last_wait_due_at=next_due_after.isoformat(),
+                    last_selected_campaign_id=campaign_id,
+                    last_selected_due_at=next_due_after.isoformat(),
+                    claimed_campaign_id=campaign_id,
+                    claimed_manifest_uri=manifest_uri,
+                    last_carryover_email_count=remaining_after + manifest_email_count + inflight_email_count,
+                )
         except Exception as exc:
             print(f"[CloudWorker] Campaign failed: {campaign_id}: {exc}")
             result_path = _write_cloud_result(campaign_id, status=CLOUD_SEND_FAILED, error_message=str(exc))
