@@ -648,6 +648,14 @@ _SCHEDULER_LOG_FILE = _DATA_DIR / "queue_runner.log"
 _SCHEDULER_LOG_PREV_FILE = _DATA_DIR / "queue_runner.previous.log"
 
 
+def _clear_scheduler_pid_file() -> None:
+    """Best-effort cleanup for stale scheduler pid files."""
+    try:
+        _SCHEDULER_PID_FILE.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def _is_scheduler_pid_alive() -> bool:
     """Return True if the PID stored in scheduler.pid belongs to a live process."""
     import os
@@ -669,10 +677,19 @@ def _is_scheduler_pid_alive() -> bool:
                 check=False,
             )
             stdout = (result.stdout or "").strip()
-            return bool(stdout) and "No tasks are running" not in stdout
+            is_alive = (
+                result.returncode == 0
+                and bool(stdout)
+                and "No tasks are running" not in stdout
+                and not stdout.startswith("ERROR:")
+            )
+            if not is_alive:
+                _clear_scheduler_pid_file()
+            return is_alive
         os.kill(pid, 0)   # signal 0 = existence probe; raises if dead
         return True
     except (OSError, ValueError, ProcessLookupError):
+        _clear_scheduler_pid_file()
         return False
 
 
@@ -789,6 +806,7 @@ def _force_remove_queue_job(job: dict, remove_job_fn) -> tuple[bool, str]:
     the queue can continue immediately instead of waiting forever.
     """
     from config.settings import CAMPAIGN_LOCK_FILE
+    from config.settings import RUNS_DIR
     from src.workflow_9_campaign_runner.campaign_state import (
         STATUS_FAILED as CAMPAIGN_STATUS_FAILED,
         load_campaign_state,
@@ -801,6 +819,25 @@ def _force_remove_queue_job(job: dict, remove_job_fn) -> tuple[bool, str]:
 
     was_running = str(job.get("status") or "").strip().lower() == "running"
     details: list[str] = []
+
+    def _mark_run_state_removed(campaign_id: str) -> None:
+        if not campaign_id:
+            return
+        run_state_path = RUNS_DIR / campaign_id / "campaign_run_state.json"
+        if not run_state_path.exists():
+            return
+        try:
+            import json  # noqa: PLC0415
+            with open(run_state_path, encoding="utf-8") as f:
+                state = json.load(f)
+            state["status"] = CAMPAIGN_STATUS_FAILED
+            state["error_message"] = "Removed from queue by operator."
+            state["updated_at"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+            with open(run_state_path, "w", encoding="utf-8") as f:
+                json.dump(state, f, ensure_ascii=False, indent=2)
+            details.append(f"Marked run state for {campaign_id} as removed.")
+        except Exception as exc:
+            details.append(f"Run-state cleanup warning for {campaign_id}: {exc}")
 
     if was_running:
         details.append(_stop_scheduler_process())
@@ -822,9 +859,15 @@ def _force_remove_queue_job(job: dict, remove_job_fn) -> tuple[bool, str]:
                 save_campaign_state(state)
                 if state_campaign_id:
                     details.append(f"Marked active campaign {state_campaign_id} as removed.")
+                    _mark_run_state_removed(state_campaign_id)
 
         CAMPAIGN_LOCK_FILE.unlink(missing_ok=True)
         details.append("Cleared campaign_run.lock.")
+        _clear_scheduler_pid_file()
+    else:
+        campaign_id = str(job.get("campaign_id") or "").strip()
+        if campaign_id:
+            _mark_run_state_removed(campaign_id)
 
     removed = bool(remove_job_fn(job_id))
     if not removed:

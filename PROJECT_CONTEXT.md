@@ -3891,3 +3891,5 @@ Related control-panel hardening:
   - previous behavior: `Remove selected` refused to remove `running` jobs, which could trap the queue behind a stuck run
   - new behavior: explicit delete now also stops the scheduler, clears `campaign_run.lock`, marks the active campaign as removed/failed, removes the queue row, and restarts the runner when pending jobs remain
   - intended UX: if an operator clicks delete, the selected job is deleted even if it is currently marked `running`
+- Queue runner stale-PID handling is now stricter on Windows: `scheduler.pid` is auto-cleared when `tasklist` returns an error / missing process, so the UI no longer shows `Scheduler — Active` for a dead runner.
+- Queue job removal cleanup is now more complete: removing a running job clears stale scheduler pid state, clears `campaign_run.lock`, marks global active campaign state failed, and also marks the campaign-scoped `data/runs/<campaign_id>/campaign_run_state.json` as removed when present.
