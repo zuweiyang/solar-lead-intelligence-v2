@@ -4035,3 +4035,21 @@ Queue runner startup now persists a tracked `.env` snapshot in `data/scheduler_e
 - validation:
   - `D:\solar-lead-intelligence\.venv\Scripts\python.exe -m py_compile src\workflow_9_5_streamlit_control_panel\ui_views.py`
   - `D:\solar-lead-intelligence\.venv\Scripts\python.exe -m pytest tests\test_brazil_market_localization.py tests\test_content_extractor_emails.py -q`
+
+2026-03-26 19:20
+
+Empty `final_send_queue.csv` files are no longer eligible for cloud deploy.
+
+- root cause observed:
+  - campaigns like `niteroi_20260326_184850_003a` reached `campaign_status` with a `final_send_queue.csv` file that existed but contained only the header row
+  - Workflow 9 auto-deploy previously treated `file exists` as deployable, so an empty manifest was uploaded and the cloud worker later failed with `No rows in final_send_queue.csv`
+- fixes:
+  - `src/workflow_9_campaign_runner/campaign_runner.py` now only auto-deploys when `final_send_queue.csv` has at least one data row
+  - `scripts/deploy_run_to_gcloud.py` now:
+    - excludes empty final queues from ready-run discovery
+    - rejects direct/manual deploy attempts for empty final queues with a clear error
+- intended behavior:
+  - if a run produces zero sendable emails, it should stay local and be treated as a no-send outcome, not be uploaded to cloud send
+- validation:
+  - `D:\solar-lead-intelligence\.venv\Scripts\python.exe -m py_compile src\workflow_9_campaign_runner\campaign_runner.py scripts\deploy_run_to_gcloud.py`
+  - `D:\solar-lead-intelligence\.venv\Scripts\python.exe -m pytest tests\test_enrichment_resilience.py tests\test_brazil_market_localization.py tests\test_content_extractor_emails.py -q`

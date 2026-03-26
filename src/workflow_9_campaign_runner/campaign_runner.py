@@ -17,6 +17,7 @@ Usage:
 """
 from __future__ import annotations
 
+import csv
 import sys
 import traceback
 from datetime import datetime, timedelta, timezone
@@ -64,6 +65,18 @@ from src.workflow_9_campaign_runner import campaign_steps as _steps
 _STALE_LOCK_THRESHOLD = timedelta(hours=2)
 
 
+def _final_send_queue_has_rows() -> bool:
+    """Return True only when final_send_queue.csv exists and has at least one data row."""
+    if not FINAL_SEND_QUEUE_FILE.exists():
+        return False
+    try:
+        with open(FINAL_SEND_QUEUE_FILE, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            return next(reader, None) is not None
+    except OSError:
+        return False
+
+
 def _should_auto_deploy(config: CampaignConfig, completed_steps: list[str]) -> bool:
     if not CLOUD_SEND_ENABLED:
         return False
@@ -76,7 +89,7 @@ def _should_auto_deploy(config: CampaignConfig, completed_steps: list[str]) -> b
         return False
     if config.run_until != "campaign_status":
         return False
-    return FINAL_SEND_QUEUE_FILE.exists()
+    return _final_send_queue_has_rows()
 
 
 def _trigger_cloud_deploy(campaign_id: str) -> None:
