@@ -4,6 +4,7 @@
 
 import json
 import re
+from urllib.parse import unquote
 from bs4 import BeautifulSoup
 
 from config.settings import COMPANY_PAGES_FILE, COMPANY_TEXT_FILE
@@ -63,6 +64,22 @@ _TEL_URL_RE = re.compile(r"""^tel:(.+)$""", re.IGNORECASE)
 # Obvious placeholder numbers to reject
 _FAKE_PHONE_PATTERNS = re.compile(r"^(\d)\1{6,}$")   # e.g. 0000000000, 9999999999
 
+_PLACEHOLDER_EMAIL_DOMAINS = {
+    "dominio.com.br",
+    "empresa.com",
+    "example.com",
+    "exemplo.com.br",
+    "domain.com",
+}
+
+_PLACEHOLDER_EMAIL_LOCALS = {
+    "seuemail",
+    "email",
+    "example",
+    "exemplo",
+    "test",
+}
+
 
 def _normalize_phone_match(raw: str, phone_re: re.Pattern[str]) -> str | None:
     """Return a cleaned phone string when the candidate looks like a real phone."""
@@ -114,6 +131,30 @@ def _extract_whatsapp_hint_phones(visible_text: str) -> list[str]:
     return hint_phones
 
 
+def _clean_email_candidate(raw: str) -> str | None:
+    """Normalize a scraped email candidate and reject obvious junk/placeholders."""
+    if not raw:
+        return None
+
+    addr = unquote(raw).strip().lower()
+    addr = re.sub(r"^[^a-z0-9._%+\-@]+", "", addr)
+    addr = re.sub(r"[^a-z0-9._%+\-@]+$", "", addr)
+
+    if not addr or "@" not in addr:
+        return None
+    if not _EMAIL_RE.fullmatch(addr):
+        return None
+    if addr.endswith((".png", ".jpg", ".jpeg", ".gif", ".css", ".js", ".svg", ".webp")):
+        return None
+
+    local, domain = addr.split("@", 1)
+    if any(domain == s or domain.endswith("." + s) for s in _SKIP_EMAIL_SUFFIXES):
+        return None
+    if local in _PLACEHOLDER_EMAIL_LOCALS or domain in _PLACEHOLDER_EMAIL_DOMAINS:
+        return None
+    return addr
+
+
 # ---------------------------------------------------------------------------
 # HTML → text
 # ---------------------------------------------------------------------------
@@ -159,8 +200,8 @@ def _extract_contacts(pages: dict[str, str]) -> tuple[list[str], list[str], list
         for a in soup.find_all("a", href=True):
             href = a["href"]
             if href.lower().startswith("mailto:"):
-                addr = href[7:].split("?")[0].strip().lower()
-                if addr and "@" in addr:
+                addr = _clean_email_candidate(href[7:].split("?")[0])
+                if addr:
                     emails_seen[addr] = emails_seen.get(addr, 0) + 2  # weight higher
             for match in _WHATSAPP_URL_RE.finditer(href):
                 digits = match.group(1)
@@ -181,13 +222,8 @@ def _extract_contacts(pages: dict[str, str]) -> tuple[list[str], list[str], list
 
         # --- emails: regex scan of full HTML text ---
         for match in _EMAIL_RE.finditer(html):
-            addr = match.group().lower()
-            domain = addr.split("@")[-1]
-            # reject noise domains (suffix match)
-            if any(domain == s or domain.endswith("." + s) for s in _SKIP_EMAIL_SUFFIXES):
-                continue
-            # skip asset file extensions accidentally matched
-            if addr.endswith((".png", ".jpg", ".gif", ".css", ".js", ".svg")):
+            addr = _clean_email_candidate(match.group())
+            if not addr:
                 continue
             emails_seen[addr] = emails_seen.get(addr, 0) + 1
 

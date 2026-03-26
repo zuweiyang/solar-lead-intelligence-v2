@@ -1,5 +1,5 @@
 """
-Workflow 9.5 / 9.6 — Streamlit Campaign Control Panel
+Workflow 9.5 / 9.6 - Streamlit Campaign Control Panel
 
 Main application entry point.
 
@@ -20,8 +20,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 import streamlit as st
 
 from src.workflow_9_5_streamlit_control_panel.debug_log import log
+from src.workflow_9_queue_scheduler.control_panel_heartbeat import (
+    write_control_panel_heartbeat,
+)
 
-log.app("═══ Streamlit Control Panel loading ═══")
+log.app("=== Streamlit Control Panel loading ===")
 
 from src.workflow_9_5_streamlit_control_panel.ui_views import (
     render_header,
@@ -41,46 +44,30 @@ from src.workflow_9_5_streamlit_control_panel.ui_views import (
     render_queue_panel,
 )
 
-# ---------------------------------------------------------------------------
-# Page config — must be the first Streamlit call
-# ---------------------------------------------------------------------------
 
 st.set_page_config(
     page_title="Campaign Control Panel",
-    page_icon="🎛️",
+    page_icon="🎥",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
 
-# ---------------------------------------------------------------------------
-# App layout
-# ---------------------------------------------------------------------------
-
 
 def main() -> None:
-    log.app("── main() render cycle start ──")
+    log.app("-- main() render cycle start --")
+    write_control_panel_heartbeat("streamlit_main")
 
-    # ── Header ──────────────────────────────────────────────────────────────
     render_header()
-
-    # ── Section: Dry-run explanation ─────────────────────────────────────────
     render_dry_run_explanation()
 
-    # ── Section 1 — Campaign Configuration + Run Controls ───────────────────
     form_values = render_campaign_form()
     st.divider()
     render_runner_controls(form_values)
 
     st.divider()
-
-    # ── Section 2 — Campaign Queue ────────────────────────────────────────────
-    # Placed immediately after Run Controls so the user can add cities and
-    # start the queue runner without scrolling.
     render_queue_panel()
 
     st.divider()
-
-    # ── Section 3 — KPI Dashboard ────────────────────────────────────────────
     show_kpi_dashboard = st.toggle(
         "Show KPI Dashboard",
         value=False,
@@ -91,49 +78,41 @@ def main() -> None:
         render_kpi_dashboard()
         st.divider()
 
-    # ── Section 4 — Current Campaign State ───────────────────────────────────
     render_campaign_state_view()
 
     st.divider()
-
-    # ── Section 5 — Runner Logs (with refresh) ───────────────────────────────
     render_multi_run_comparison_view()
 
-    st.divider()
+    show_advanced_panels = st.toggle(
+        "Show Advanced Panels",
+        value=False,
+        key="show_advanced_panels",
+        help="Hidden by default to keep the control panel lighter. Turn this on only when you need review queues, logs, lifecycle detail, or file-status diagnostics.",
+    )
+    if show_advanced_panels:
+        st.divider()
+        render_manual_review_queue_view()
 
-    render_manual_review_queue_view()
+        st.divider()
+        render_logs_view()
 
-    st.divider()
+        st.divider()
+        render_high_priority_leads_view()
 
-    render_logs_view()
+        st.divider()
+        render_company_detail_view()
 
-    st.divider()
+        st.divider()
+        render_manual_followup_action()
 
-    # ── Section 6 — High Priority Leads ──────────────────────────────────────
-    render_high_priority_leads_view()
+        st.divider()
+        render_status_table_view()
 
-    st.divider()
-
-    # ── Section 7 — Company Lifecycle Detail ─────────────────────────────────
-    render_company_detail_view()
-
-    st.divider()
-
-    # ── Section 8 — Manual Send followup_1 ───────────────────────────────────
-    render_manual_followup_action()
-
-    st.divider()
-
-    # ── Section 9 — Campaign Status Table ────────────────────────────────────
-    render_status_table_view()
-
-    st.divider()
-
-    # ── Section 10 — Enhanced File Status ─────────────────────────────────────
-    render_enhanced_file_status_view()
+        st.divider()
+        render_enhanced_file_status_view()
 
 
 if __name__ == "__main__":
     log.app("__main__ entry point")
     main()
-    log.app("── main() render cycle complete ──")
+    log.app("-- main() render cycle complete --")

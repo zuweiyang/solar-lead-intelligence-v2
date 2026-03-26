@@ -78,6 +78,9 @@ from src.workflow_9_5_streamlit_control_panel.ui_actions import (
 )
 from src.workflow_9_campaign_runner.campaign_config import PIPELINE_STEPS
 from src.workflow_9_campaign_runner.campaign_runner import is_campaign_running
+from src.workflow_9_queue_scheduler.control_panel_heartbeat import (
+    write_control_panel_heartbeat,
+)
 from config.settings import CLOUD_SEND_ENABLED
 
 
@@ -2315,6 +2318,7 @@ def _render_queue_panel_content() -> None:
     "Add N cities to Queue".
     """
     log.ui("render_queue_panel()")
+    write_control_panel_heartbeat("queue_panel")
     st.header("Campaign Queue")
     st.caption("To add jobs, use **Multiple Run** in Campaign Configuration above.")
 

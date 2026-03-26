@@ -11,6 +11,7 @@ Verifies:
 """
 import importlib
 import sys
+import json
 import pytest
 from unittest.mock import patch
 
@@ -160,3 +161,47 @@ class TestNoGuessedFallback:
         assert len(rows) == 1
         assert rows[0]["enrichment_source"] == "none"
         assert rows[0]["kp_email"] == ""
+
+
+class TestWebsiteContactCache:
+    def test_site_contact_cache_reloads_when_company_text_file_changes(self, tmp_path):
+        enricher = _fresh_enricher()
+
+        first = tmp_path / "first.json"
+        second = tmp_path / "second.json"
+        first.write_text(json.dumps([
+            {"place_id": "p1", "website": "https://one.com.br", "site_emails": ["contato@one.com.br"], "site_phones": [], "whatsapp_phones": []}
+        ]), encoding="utf-8")
+        second.write_text(json.dumps([
+            {"place_id": "p2", "website": "https://two.com.br", "site_emails": ["contato@two.com.br"], "site_phones": [], "whatsapp_phones": []}
+        ]), encoding="utf-8")
+
+        with patch.object(enricher, "COMPANY_TEXT_FILE", first):
+            enricher._site_contact_cache = None
+            enricher._site_contact_cache_source = None
+            contact = enricher._query_website_contact({"place_id": "p1", "website": "https://one.com.br"})
+            assert contact["kp_email"] == "contato@one.com.br"
+
+        with patch.object(enricher, "COMPANY_TEXT_FILE", second):
+            contact = enricher._query_website_contact({"place_id": "p2", "website": "https://two.com.br"})
+            assert contact["kp_email"] == "contato@two.com.br"
+
+    def test_site_contact_loader_cleans_dirty_scraped_emails(self, tmp_path):
+        enricher = _fresh_enricher()
+        company_text = tmp_path / "company_text.json"
+        company_text.write_text(json.dumps([
+            {
+                "place_id": "p1",
+                "website": "https://bhenergiasolar.com.br",
+                "site_emails": ["%20contato@bhenergiasolar.com.br", "flags@2x.webp", "seuemail@dominio.com.br"],
+                "site_phones": [],
+                "whatsapp_phones": [],
+            }
+        ]), encoding="utf-8")
+
+        with patch.object(enricher, "COMPANY_TEXT_FILE", company_text):
+            enricher._site_contact_cache = None
+            enricher._site_contact_cache_source = None
+            contact = enricher._query_website_contact({"place_id": "p1", "website": "https://bhenergiasolar.com.br"})
+
+        assert contact["kp_email"] == "contato@bhenergiasolar.com.br"

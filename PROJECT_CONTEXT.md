@@ -4053,3 +4053,93 @@ Empty `final_send_queue.csv` files are no longer eligible for cloud deploy.
 - validation:
   - `D:\solar-lead-intelligence\.venv\Scripts\python.exe -m py_compile src\workflow_9_campaign_runner\campaign_runner.py scripts\deploy_run_to_gcloud.py`
   - `D:\solar-lead-intelligence\.venv\Scripts\python.exe -m pytest tests\test_enrichment_resilience.py tests\test_brazil_market_localization.py tests\test_content_extractor_emails.py -q`
+
+2026-03-26 19:35
+
+Cloud deploy UI now separates "empty final queue" outcomes from real cloud failures.
+
+- root cause observed:
+  - runs like `niteroi_20260326_184850_003a` could appear in the cloud recovery UI as if cloud send had failed
+  - in reality, `final_send_queue.csv` contained zero data rows, so the operator-facing problem was "no sendable contacts", not a cloud outage
+- fixes:
+  - `src/workflow_9_5_streamlit_control_panel/ui_state.py` now excludes zero-row final queues from `Ready To Deploy`
+  - the reconciliation/history view now labels these runs as `no_sendable_contacts`
+  - the note explains that `final_send_queue.csv` is empty and no sendable contacts survived filtering
+- intended behavior:
+  - empty-queue runs should not look like `send_failed_redeploy`
+  - operators should immediately understand that the run finished with no sendable recipients
+- validation:
+  - `D:\solar-lead-intelligence\.venv\Scripts\python.exe -m py_compile src\workflow_9_5_streamlit_control_panel\ui_state.py`
+
+2026-03-26 22:40
+
+Website-contact loss between Workflow 3 crawl output and Workflow 5.5 enrichment has been fixed.
+
+- issue observed:
+  - recent Brazil runs showed `company_text.json` containing real website emails such as:
+    - `contato@redesolenergiasolar.com.br`
+    - `contato@bhenergiasolar.com.br`
+    - `contato@netham.com.br`
+  - but the corresponding `enriched_contacts.csv` rows still came out as `enrichment_source = none`
+- root cause 1:
+  - `src/workflow_5_5_lead_enrichment/enricher.py` used a process-global `_site_contact_cache`
+  - in long-lived queue-runner sessions, that cache was not reset per run, so later campaigns could read stale site-contact data from earlier campaigns
+- root cause 2:
+  - legacy crawl output could contain malformed site emails such as:
+    - `%20contato@...`
+    - `flags@2x.webp`
+    - `seuemail@dominio.com.br`
+  - those dirty values could block or outrank the real business email
+- fixes:
+  - `enricher.run()` now resets website-contact cache per run
+  - `_load_site_contacts()` now keys cache by the resolved `COMPANY_TEXT_FILE` path
+  - `_load_site_contacts()` also cleans legacy site emails on read:
+    - strips URL-encoded prefixes like `%20`
+    - drops asset-like pseudo-emails (`*.webp`, etc.)
+    - drops placeholder emails (`seuemail@dominio.com.br`, `contato@exemplo.com.br`, etc.)
+  - `src/workflow_3_web_crawler/content_extractor.py` now applies the same cleaning during new crawls
+- verification:
+  - local tests passed:
+    - `D:\solar-lead-intelligence\.venv\Scripts\python.exe -m pytest tests\test_content_extractor_emails.py tests\test_enrichment_resilience.py -q`
+  - focused replay against `belo-horizonte_20260326_203232_b645` now resolves:
+    - `Redesol -> contato@redesolenergiasolar.com.br`
+    - `MHS -> contato@bhenergiasolar.com.br`
+    - `Netham -> contato@netham.com.br`
+- status:
+  - fixed locally and verified
+  - push / VM update still pending for this specific website-contact handoff fix
+
+2026-03-26 23:20
+
+Closing the local Streamlit control panel now pauses the queue instead of leaving the runner unattended in the background.
+
+- operator expectation captured:
+  - Streamlit is the only control surface for local multi-run orchestration
+  - if the operator closes Streamlit, the queue runner should stop and the current run should pause
+  - on the next launch, the operator should manually click continue / resume
+- implementation:
+  - added `src/workflow_9_queue_scheduler/control_panel_heartbeat.py`
+  - Streamlit now writes a lightweight heartbeat to `data/control_panel_heartbeat.json`
+    - from `src/workflow_9_5_streamlit_control_panel/app.py`
+    - and from the queue panel fragment in `src/workflow_9_5_streamlit_control_panel/ui_views.py`
+  - new settings:
+    - `CONTROL_PANEL_HEARTBEAT_FILE`
+    - `CONTROL_PANEL_HEARTBEAT_TIMEOUT_SECONDS` (default 20s)
+  - `src/workflow_9_queue_scheduler/queue_runner.py` now:
+    - pauses the queue and exits when the control-panel heartbeat goes stale while jobs are still pending
+    - preserves the active job by moving it back to `pending`
+    - keeps the `campaign_id` so the next runner launch can resume instead of starting fresh
+  - `src/workflow_9_campaign_runner/campaign_runner.py` now:
+    - checks the control-panel heartbeat at workflow step boundaries
+    - marks the campaign `paused` and raises a controlled pause exception when Streamlit disappears
+- behavior after this change:
+  - closing Streamlit no longer leaves the runner silently processing new jobs
+  - an in-flight campaign pauses at the next safe step boundary
+  - reopening Streamlit requires an explicit manual continue action, which is the intended operator workflow
+- validation:
+  - `D:\solar-lead-intelligence\.venv\Scripts\python.exe -m py_compile src\workflow_9_queue_scheduler\control_panel_heartbeat.py src\workflow_9_queue_scheduler\queue_runner.py src\workflow_9_campaign_runner\campaign_runner.py src\workflow_9_5_streamlit_control_panel\app.py src\workflow_9_5_streamlit_control_panel\ui_views.py`
+  - `D:\solar-lead-intelligence\.venv\Scripts\python.exe -m pytest tests\test_brazil_market_localization.py tests\test_content_extractor_emails.py tests\test_enrichment_resilience.py -q`
+- follow-up stabilization:
+  - the first heartbeat implementation caused a Streamlit startup import error because `control_panel_heartbeat.py` imported heartbeat constants from `config.settings` too early
+  - the module now resolves its own heartbeat path (`data/control_panel_heartbeat.json`) and timeout fallback directly, while still honoring the `CONTROL_PANEL_HEARTBEAT_TIMEOUT_SECONDS` env var
+  - this removes the startup-time dependency on `config.settings` and prevents `ImportError: cannot import name 'CONTROL_PANEL_HEARTBEAT_FILE'`

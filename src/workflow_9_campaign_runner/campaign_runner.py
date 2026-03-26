@@ -56,6 +56,10 @@ from src.workflow_9_campaign_runner.campaign_logger import (
     LOG_FAILED,
 )
 from src.workflow_9_campaign_runner import campaign_steps as _steps
+from src.workflow_9_queue_scheduler.control_panel_heartbeat import (
+    get_control_panel_heartbeat_age_seconds,
+    is_control_panel_heartbeat_stale,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -63,6 +67,32 @@ from src.workflow_9_campaign_runner import campaign_steps as _steps
 # ---------------------------------------------------------------------------
 
 _STALE_LOCK_THRESHOLD = timedelta(hours=2)
+
+
+class ControlPanelDisconnected(RuntimeError):
+    """Raised when the Streamlit control panel heartbeat disappears."""
+
+
+def _ensure_control_panel_connected(campaign_id: str, next_step_name: str) -> None:
+    """
+    Pause the active campaign when the Streamlit control panel is gone.
+
+    We only check this at workflow step boundaries so an in-flight step can
+    finish cleanly before the run is paused and handed back to the operator.
+    """
+    if not is_control_panel_heartbeat_stale():
+        return
+
+    age = get_control_panel_heartbeat_age_seconds()
+    age_text = f"{int(age)}s" if age is not None else "unknown"
+    message = (
+        "Control panel heartbeat lost. Pausing the queue until the operator "
+        f"reopens Streamlit and clicks continue (last heartbeat age: {age_text})."
+    )
+    print(f"[Workflow 9]   PAUSE before {next_step_name}: {message}")
+    append_campaign_log(campaign_id, next_step_name, LOG_FAILED, message)
+    update_campaign_state(next_step_name, "paused", error_message=message)
+    raise ControlPanelDisconnected(message)
 
 
 def _final_send_queue_has_rows() -> bool:
@@ -289,6 +319,8 @@ def run_campaign(config: CampaignConfig) -> dict:
                 if step_name == run_until:
                     break
                 continue
+
+            _ensure_control_panel_connected(campaign_id, step_name)
 
             # Log step start
             print(f"[Workflow 9]   START {step_name}")

@@ -109,3 +109,24 @@ def test_extract_contacts_prefers_page_local_phone_for_whatsapp_hint():
     assert "(11) 97071-3044" in phones
     assert "(11) 3090-5976" not in whatsapp_phones
     assert "(11) 97071-3044" in whatsapp_phones
+
+
+def test_extract_contacts_cleans_percent_encoded_mailto_and_drops_placeholder_noise():
+    html = """
+    <html>
+      <body>
+        <a href="mailto:%20contato@bhenergiasolar.com.br">Email real</a>
+        <div>seuemail@dominio.com.br</div>
+        <div>flags@2x.webp</div>
+      </body>
+    </html>
+    """
+
+    emails, phones, whatsapp_phones = _extract_contacts({"home": html})
+
+    assert "contato@bhenergiasolar.com.br" in emails
+    assert "%20contato@bhenergiasolar.com.br" not in emails
+    assert "seuemail@dominio.com.br" not in emails
+    assert "flags@2x.webp" not in emails
+    assert phones == []
+    assert whatsapp_phones == []

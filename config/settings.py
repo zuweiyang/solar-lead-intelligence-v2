@@ -211,6 +211,10 @@ CAMPAIGN_LOCK_FILE        = DATA_DIR / "campaign_run.lock"
 CAMPAIGN_QUEUE_FILE       = DATA_DIR / "campaign_queue.json"
 CAMPAIGN_QUEUE_PAUSE_FLAG = DATA_DIR / "queue_pause.flag"
 SCHEDULER_PID_FILE        = DATA_DIR / "scheduler.pid"
+CONTROL_PANEL_HEARTBEAT_FILE = DATA_DIR / "control_panel_heartbeat.json"
+CONTROL_PANEL_HEARTBEAT_TIMEOUT_SECONDS = float(
+    os.getenv("CONTROL_PANEL_HEARTBEAT_TIMEOUT_SECONDS", "20")
+)
 
 # ---------------------------------------------------------------------------
 # Campaign-scoped paths — resolve under data/runs/<campaign_id>/ per run

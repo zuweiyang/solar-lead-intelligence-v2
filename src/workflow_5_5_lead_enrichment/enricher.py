@@ -13,8 +13,10 @@
 
 import csv
 import json
+import re
 import time
 from pathlib import Path
+from urllib.parse import unquote
 import tldextract
 import requests
 
@@ -204,6 +206,20 @@ def _title_is_buyer_persona(title: str) -> bool:
 
 # Local-parts that identify generic/alias mailboxes (not personal contacts).
 _GENERIC_LOCAL_PARTS: frozenset[str] = frozenset(get_generic_mailbox_local_parts())
+_PLACEHOLDER_EMAIL_DOMAINS: frozenset[str] = frozenset({
+    "dominio.com.br",
+    "empresa.com",
+    "example.com",
+    "exemplo.com.br",
+    "domain.com",
+})
+_PLACEHOLDER_EMAIL_LOCALS: frozenset[str] = frozenset({
+    "seuemail",
+    "email",
+    "example",
+    "exemplo",
+    "test",
+})
 
 
 def _is_generic_mailbox(email: str) -> bool:
@@ -211,6 +227,27 @@ def _is_generic_mailbox(email: str) -> bool:
     if not email or "@" not in email:
         return False
     return email.split("@")[0].lower().strip() in _GENERIC_LOCAL_PARTS
+
+
+def _clean_site_email(email: str) -> str | None:
+    """Normalize website-scraped emails and drop placeholders/assets."""
+    if not email:
+        return None
+    addr = unquote(email).strip().lower()
+    addr = addr.lstrip("%20").lstrip()
+    addr = addr.lstrip("0123456789") if addr[:2].isdigit() else addr
+    addr = addr.strip(" <>\"'(),;")
+    addr = addr.lstrip(".-_")
+    if "@" not in addr:
+        return None
+    if not re.fullmatch(r"[\w.+\-]+@(?:[\w\-]+\.)+[a-zA-Z]{2,24}", addr, re.ASCII):
+        return None
+    if addr.endswith((".png", ".jpg", ".jpeg", ".gif", ".css", ".js", ".svg", ".webp")):
+        return None
+    local, domain = addr.split("@", 1)
+    if local in _PLACEHOLDER_EMAIL_LOCALS or domain in _PLACEHOLDER_EMAIL_DOMAINS:
+        return None
+    return addr
 
 
 ENRICHED_FIELDS = [
@@ -548,6 +585,7 @@ def _query_hunter(domain: str) -> dict | None:
 # ---------------------------------------------------------------------------
 
 _site_contact_cache: dict[str, dict] | None = None   # place_id/website → contact
+_site_contact_cache_source: str | None = None
 
 
 def _load_site_contacts() -> dict[str, dict]:
@@ -556,11 +594,13 @@ def _load_site_contacts() -> dict[str, dict]:
     (written by Workflow 3).
     Returns lookup dict keyed by both place_id and normalised website domain.
     """
-    global _site_contact_cache
-    if _site_contact_cache is not None:
+    global _site_contact_cache, _site_contact_cache_source
+    company_text_path = str(Path(str(COMPANY_TEXT_FILE)).resolve())
+    if _site_contact_cache is not None and _site_contact_cache_source == company_text_path:
         return _site_contact_cache
 
     _site_contact_cache = {}
+    _site_contact_cache_source = company_text_path
     if not COMPANY_TEXT_FILE.exists():
         return _site_contact_cache
 
@@ -571,7 +611,12 @@ def _load_site_contacts() -> dict[str, dict]:
         return _site_contact_cache
 
     for r in records:
-        emails = r.get("site_emails") or []
+        raw_emails = r.get("site_emails") or []
+        emails: list[str] = []
+        for email in raw_emails:
+            cleaned = _clean_site_email(email)
+            if cleaned and cleaned not in emails:
+                emails.append(cleaned)
         phones = r.get("site_phones") or []
         whatsapp_phones = r.get("whatsapp_phones") or []
         if not emails and not phones and not whatsapp_phones:
@@ -1087,6 +1132,9 @@ def run(limit: int = 0, paths: RunPaths | None = None) -> list[dict]:
     _PROVIDER_RATE_LIMITED.clear()
     for k in _ENRICHMENT_COUNTERS:
         _ENRICHMENT_COUNTERS[k] = 0
+    global _site_contact_cache, _site_contact_cache_source
+    _site_contact_cache = None
+    _site_contact_cache_source = None
 
     leads = load_qualified_leads(limit=limit, in_path=paths.qualified_leads_file)
 
