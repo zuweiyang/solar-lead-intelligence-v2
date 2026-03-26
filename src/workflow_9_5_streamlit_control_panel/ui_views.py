@@ -14,6 +14,8 @@ Reusable Streamlit rendering functions.  Each function owns one UI section.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import sys
 import time
 from datetime import datetime
@@ -22,6 +24,7 @@ from pathlib import Path
 import streamlit as st
 import pandas as pd
 from streamlit import column_config
+from dotenv import dotenv_values
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
@@ -642,10 +645,68 @@ def _render_dup_confirmation() -> None:
 
 # Compute paths directly — avoids importing from config.settings at module load
 # time, which can fail if Streamlit serves a stale __pycache__ for settings.py.
-_DATA_DIR = Path(__file__).parent.parent.parent / "data"
+_ROOT_DIR = Path(__file__).parent.parent.parent
+_DATA_DIR = _ROOT_DIR / "data"
+_ENV_FILE = _ROOT_DIR / ".env"
 _SCHEDULER_PID_FILE = _DATA_DIR / "scheduler.pid"
 _SCHEDULER_LOG_FILE = _DATA_DIR / "queue_runner.log"
 _SCHEDULER_LOG_PREV_FILE = _DATA_DIR / "queue_runner.previous.log"
+_SCHEDULER_ENV_STATE_FILE = _DATA_DIR / "scheduler_env_state.json"
+
+_RUNNER_ENV_KEYS = (
+    "GOOGLE_MAPS_API_KEY",
+    "APOLLO_API_KEY",
+    "HUNTER_API_KEY",
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "OPENROUTER_API_KEY",
+    "LLM_PROVIDER",
+    "LLM_MODEL",
+    "EMAIL_GEN_PROVIDER",
+    "EMAIL_GEN_MODEL",
+    "EMAIL_GEN_FALLBACK_MODEL",
+    "EMAIL_SEND_MODE",
+    "EMAIL_ADDRESS",
+    "EMAIL_PASSWORD",
+    "SMTP_HOST",
+    "SMTP_PORT",
+    "SMTP_USERNAME",
+    "SMTP_PASSWORD",
+    "SMTP_USE_TLS",
+    "SMTP_FROM_EMAIL",
+    "SMTP_FROM_NAME",
+    "REPLY_TO_EMAIL",
+    "GMAIL_API_MIN_SEND_INTERVAL_SECONDS",
+    "GMAIL_API_MAX_RETRIES",
+    "GMAIL_API_BACKOFF_BASE_SECONDS",
+    "GMAIL_API_BACKOFF_MAX_SECONDS",
+    "GMAIL_API_ENABLE_JITTER",
+    "SEND_PACING_MIN_SECONDS",
+    "SEND_PACING_MAX_SECONDS",
+    "SEND_HOURLY_LIMIT",
+    "SEND_WINDOW_START",
+    "SEND_WINDOW_END",
+    "SEND_WINDOW_SLOTS",
+    "DAILY_EMAIL_LIMIT",
+    "BATCH_SIZE",
+    "SCRAPE_DELAY_SECONDS",
+    "CRAWL_DELAY_SECONDS",
+    "CLOUD_SEND_ENABLED",
+    "CLOUD_AUTO_DEPLOY_ON_COMPLETE",
+    "CLOUD_ENVIRONMENT",
+    "GCS_BUCKET",
+    "GCS_RUNS_PREFIX",
+    "GCS_MANIFESTS_PREFIX",
+    "GCS_INFLIGHT_PREFIX",
+    "GCS_PROCESSED_PREFIX",
+    "GCS_FAILED_PREFIX",
+    "GCS_STATUS_PREFIX",
+    "CLOUD_WORKER_POLL_SECONDS",
+    "CLOUD_SEND_INBOX_DAILY_LIMIT",
+    "CLOUD_SEND_INBOX_HOURLY_LIMIT",
+    "CLOUD_SEND_SKIP_WEEKENDS",
+    "CLOUD_SEND_CAP_TIMEZONE",
+)
 
 
 def _clear_scheduler_pid_file() -> None:
@@ -654,6 +715,86 @@ def _clear_scheduler_pid_file() -> None:
         _SCHEDULER_PID_FILE.unlink(missing_ok=True)
     except OSError:
         pass
+    try:
+        _SCHEDULER_ENV_STATE_FILE.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _load_current_runner_env_values() -> dict[str, str]:
+    """Read the tracked runner environment values directly from .env."""
+    raw = dotenv_values(_ENV_FILE) if _ENV_FILE.exists() else {}
+    values: dict[str, str] = {}
+    for key in _RUNNER_ENV_KEYS:
+        value = raw.get(key, "")
+        values[key] = "" if value is None else str(value)
+    return values
+
+
+def _compute_runner_env_hash(values: dict[str, str]) -> str:
+    payload = json.dumps(values, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _write_scheduler_env_state(pid: int) -> None:
+    """Persist the tracked env snapshot used to launch the current runner."""
+    try:
+        values = _load_current_runner_env_values()
+        payload = {
+            "pid": int(pid),
+            "captured_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+            "env_file": str(_ENV_FILE),
+            "env_file_mtime": _ENV_FILE.stat().st_mtime if _ENV_FILE.exists() else None,
+            "tracked_keys": list(_RUNNER_ENV_KEYS),
+            "tracked_values": values,
+            "tracked_hash": _compute_runner_env_hash(values),
+        }
+        _DATA_DIR.mkdir(parents=True, exist_ok=True)
+        _SCHEDULER_ENV_STATE_FILE.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+
+def _read_scheduler_env_state() -> dict:
+    """Load the stored runner env snapshot."""
+    if not _SCHEDULER_ENV_STATE_FILE.exists():
+        return {}
+    try:
+        return json.loads(_SCHEDULER_ENV_STATE_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _get_scheduler_env_drift() -> dict:
+    """
+    Compare the runner's startup env snapshot against the current .env file.
+
+    Returns:
+      {
+        "requires_restart": bool,
+        "changed_keys": list[str],
+      }
+    """
+    if not _is_scheduler_pid_alive():
+        return {"requires_restart": False, "changed_keys": []}
+
+    stored = _read_scheduler_env_state()
+    tracked_values = stored.get("tracked_values")
+    if not isinstance(tracked_values, dict) or not tracked_values:
+        return {"requires_restart": False, "changed_keys": []}
+
+    current = _load_current_runner_env_values()
+    changed_keys = [
+        key for key in _RUNNER_ENV_KEYS
+        if str(tracked_values.get(key, "")) != str(current.get(key, ""))
+    ]
+    return {
+        "requires_restart": bool(changed_keys),
+        "changed_keys": changed_keys,
+    }
 
 
 def _is_scheduler_pid_alive() -> bool:
@@ -767,6 +908,7 @@ def _start_scheduler_process() -> tuple[bool, str]:
         proc = subprocess.Popen([sys.executable, "-X", "utf8", str(script)], **kwargs)
         _SCHEDULER_PID_FILE.parent.mkdir(parents=True, exist_ok=True)
         _SCHEDULER_PID_FILE.write_text(str(proc.pid))
+        _write_scheduler_env_state(proc.pid)
         log_handle.close()
         message = (
             f"Queue runner started (PID {proc.pid}). "
@@ -791,9 +933,11 @@ def _stop_scheduler_process() -> str:
         pid = int(_SCHEDULER_PID_FILE.read_text().strip())
         os.kill(pid, _signal.SIGTERM)
         _SCHEDULER_PID_FILE.unlink(missing_ok=True)
+        _SCHEDULER_ENV_STATE_FILE.unlink(missing_ok=True)
         return f"Stop signal sent to PID {pid}."
     except (OSError, ValueError, ProcessLookupError) as exc:
         _SCHEDULER_PID_FILE.unlink(missing_ok=True)
+        _SCHEDULER_ENV_STATE_FILE.unlink(missing_ok=True)
         return f"Scheduler was not running (cleaned up stale PID): {exc}"
 
 
@@ -892,6 +1036,21 @@ _UI_INTERACTION_PAUSE_SECONDS = 8
 def _pause_ui_autorefresh(seconds: int = _UI_INTERACTION_PAUSE_SECONDS) -> None:
     """Temporarily suspend fragment-driven auto-refresh after table interactions."""
     st.session_state["_ui_autorefresh_paused_until"] = time.time() + max(seconds, 0)
+
+
+def _reset_queue_ui_state() -> None:
+    """Clear queue/session residue after queue mutations so the panel rehydrates from disk."""
+    refresh_dashboard_state()
+    for key in (
+        "_queue_summary_snapshot",
+        "_queue_dup_pending",
+        "_queue_add_result",
+        "_ui_autorefresh_paused_until",
+        "queue_jobs_editor",
+        "_queue_env_drift_warning",
+    ):
+        if key in st.session_state:
+            del st.session_state[key]
 
 
 def _is_ui_autorefresh_paused() -> bool:
@@ -2217,11 +2376,22 @@ def _render_queue_panel_content() -> None:
     # Override pid_alive in sched with the already-computed value (avoids a
     # second os.kill probe after we may have just stopped the process).
     sched["pid_alive"] = pid_alive
+    env_drift = _get_scheduler_env_drift() if pid_alive else {"requires_restart": False, "changed_keys": []}
+    drift_keys = list(env_drift.get("changed_keys") or [])
 
     status_col, btn_col = st.columns([4, 1])
 
     with status_col:
-        if sched["state"] == "active":
+        if env_drift.get("requires_restart"):
+            preview = ", ".join(drift_keys[:5])
+            extra = f" +{len(drift_keys) - 5} more" if len(drift_keys) > 5 else ""
+            st.warning(
+                "**Scheduler — Restart Required** | "
+                "Runner is using an older API / send configuration snapshot. "
+                "Restart it so queued jobs use the latest `.env` values."
+            )
+            st.caption(f"Changed config keys: `{preview}{extra}`")
+        elif sched["state"] == "active":
             st.success(f"**Scheduler — Active** | {sched['detail']}")
         elif sched["state"] == "paused":
             st.warning(f"**Scheduler — Paused** | {sched['detail']}")
@@ -2244,12 +2414,26 @@ def _render_queue_panel_content() -> None:
         job_running = sched["state"] == "active" and is_campaign_running()
         queue_paused = sched["state"] == "paused"
 
-        if queue_paused:
+        if env_drift.get("requires_restart") and pid_alive:
+            if st.button("Restart Runner", type="primary", width="stretch", key="sched_restart_for_env"):
+                log.action("Restart Runner clicked due to env drift", changed_keys=drift_keys)
+                stop_msg = _stop_scheduler_process()
+                ok, start_msg = _start_scheduler_process()
+                log.action("Restart result", stopped=stop_msg, ok=ok, detail=start_msg)
+                if ok:
+                    st.toast(f"{stop_msg} {start_msg}")
+                else:
+                    st.error(f"{stop_msg} {start_msg}")
+                _reset_queue_ui_state()
+                st.rerun()
+
+        elif queue_paused:
             if pid_alive:
                 if st.button("Resume Queue", type="primary", width="stretch", key="sched_resume_primary"):
                     log.action("Primary Resume Queue clicked")
                     resume_queue()
                     st.toast("Queue resumed.")
+                    _reset_queue_ui_state()
                     st.rerun()
             else:
                 if st.button(
@@ -2267,6 +2451,7 @@ def _render_queue_panel_content() -> None:
                         st.toast(msg)
                     else:
                         st.error(msg)
+                    _reset_queue_ui_state()
                     st.rerun()
 
         elif pid_alive:
@@ -2275,6 +2460,7 @@ def _render_queue_panel_content() -> None:
                 msg = _stop_scheduler_process()
                 log.action("Stop result", detail=msg)
                 st.toast(msg)
+                _reset_queue_ui_state()
                 st.rerun()
         else:
             if st.button(
@@ -2291,6 +2477,7 @@ def _render_queue_panel_content() -> None:
                     st.toast(msg)
                 else:
                     st.error(msg)
+                _reset_queue_ui_state()
                 st.rerun()
 
     # ---- Metrics row --------------------------------------------------------
@@ -2352,11 +2539,13 @@ def _render_queue_panel_content() -> None:
             if st.button("Resume Queue", key="queue_resume_secondary"):
                 log.action("Resume Queue clicked")
                 resume_queue()
+                _reset_queue_ui_state()
                 st.rerun()
         else:
             if st.button("Pause Queue", key="queue_pause"):
                 log.action("Pause Queue clicked")
                 pause_queue()
+                _reset_queue_ui_state()
                 st.rerun()
 
     st.divider()
@@ -2444,6 +2633,7 @@ def _render_queue_panel_content() -> None:
             st.toast(f"Removed {removed} job(s).")
             if cleanup_notes:
                 st.info(" ".join(cleanup_notes))
+            _reset_queue_ui_state()
             st.rerun()
 
     with action_col2:
@@ -2461,6 +2651,7 @@ def _render_queue_panel_content() -> None:
                         requeued += 1
                 log.action("Re-queue selected jobs", count=requeued, selected=len(selected_ids))
                 st.toast(f"Re-queued {requeued} job(s).")
+                _reset_queue_ui_state()
                 st.rerun()
 
 

@@ -4019,3 +4019,19 @@ This is intended to reduce fake numeric noise in `site_phone` / `whatsapp_phone`
 - validation:
   - added regression coverage in `tests/test_enrichment_resilience.py`
   - local tests passed with `D:\solar-lead-intelligence\.venv\Scripts\python.exe`
+
+2026-03-26 18:40
+
+Queue runner startup now persists a tracked `.env` snapshot in `data/scheduler_env_state.json`, and the Streamlit queue panel compares that startup snapshot against the current `.env` for runner-relevant API / send / cloud settings.
+
+- intent:
+  - prevent a long-lived local queue runner from silently continuing with stale API keys or stale send/cloud config after operators edit `.env`
+- behavior:
+  - if any tracked key changes while the runner is alive, the queue panel shows `Scheduler — Restart Required`
+  - the primary action becomes `Restart Runner`
+  - stopping / stale-PID cleanup also removes the saved runner env snapshot
+- scope:
+  - covers Google Maps, Apollo, Hunter, LLM provider/model settings, SMTP / Gmail send settings, pacing / limits, and cloud-send related environment flags
+- validation:
+  - `D:\solar-lead-intelligence\.venv\Scripts\python.exe -m py_compile src\workflow_9_5_streamlit_control_panel\ui_views.py`
+  - `D:\solar-lead-intelligence\.venv\Scripts\python.exe -m pytest tests\test_brazil_market_localization.py tests\test_content_extractor_emails.py -q`
