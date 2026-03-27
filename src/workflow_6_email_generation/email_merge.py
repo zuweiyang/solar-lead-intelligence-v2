@@ -299,22 +299,7 @@ def _fallback_contact_from_lead(lead: dict) -> dict | None:
 
     is_generic = _as_bool(lead.get("is_generic_mailbox", "")) or _is_generic_email(email)
     if is_generic:
-        return {
-            "kp_name":              "",
-            "kp_title":             "",
-            "kp_email":             email,
-            "enrichment_source":    lead.get("enrichment_source", ""),
-            "email_confidence_tier": lead.get("email_confidence_tier", ""),
-            "send_eligibility":     lead.get("send_eligibility", ""),
-            "send_pool":            lead.get("send_pool", ""),
-            "contact_trust":        lead.get("contact_trust", ""),
-            "send_target_type":     "generic",
-            "contact_source":       "fallback",
-            "named_contact_available": "false",
-            "generic_contact_available": "true",
-            "contact_quality":      "generic_only",
-            "generic_only":         "true",
-        }
+        return None
 
     if not (lead.get("kp_name") or "").strip():
         return None
@@ -348,9 +333,9 @@ def _route_contact(lead: dict, contacts_by_company: dict[str, list[dict]]) -> di
 
     Rules:
     - named contact wins when available
-    - generic mailbox is used only when no named contact is usable
+    - generic-only mailbox fallback is disabled for first-touch sends
     - guessed contacts are never used for first-touch sending
-    - no usable contact => company is not queued for email generation
+    - no usable named contact => company is not queued for email generation
     """
     key = _company_key(lead)
     contacts = contacts_by_company.get(key, []) if key else []
@@ -363,16 +348,7 @@ def _route_contact(lead: dict, contacts_by_company: dict[str, list[dict]]) -> di
         and not _is_guess_source(row)
         and _is_sendable_contact(row)
     ]
-    generic_contacts = [
-        row for row in contacts
-        if (row.get("kp_email") or "").strip()
-        and (_as_bool(row.get("is_generic_mailbox", "")) or _is_generic_email(row.get("kp_email", "")))
-        and not _is_guess_source(row)
-        and _is_sendable_contact(row)
-    ]
-
     named_available = bool(named_contacts)
-    generic_available = bool(generic_contacts)
 
     if named_contacts:
         trusted_named = [row for row in named_contacts if _is_trusted_contact(row)]
@@ -394,28 +370,9 @@ def _route_contact(lead: dict, contacts_by_company: dict[str, list[dict]]) -> di
             "send_target_type":         "named",
             "contact_source":           "kp",
             "named_contact_available":  "true",
-            "generic_contact_available": "true" if generic_available else "false",
+            "generic_contact_available": "false",
             "contact_quality":          quality,
             "generic_only":             "false",
-        }
-
-    if generic_contacts:
-        chosen = generic_contacts[0]
-        return {
-            "kp_name":                  "",
-            "kp_title":                 chosen.get("kp_title", ""),
-            "kp_email":                 chosen.get("kp_email", ""),
-            "enrichment_source":        chosen.get("enrichment_source", ""),
-            "email_confidence_tier":    chosen.get("email_confidence_tier", ""),
-            "send_eligibility":         chosen.get("send_eligibility", ""),
-            "send_pool":                chosen.get("send_pool", ""),
-            "contact_trust":            chosen.get("contact_trust", ""),
-            "send_target_type":         "generic",
-            "contact_source":           "generic",
-            "named_contact_available":  "false",
-            "generic_contact_available": "true",
-            "contact_quality":          "generic_only",
-            "generic_only":             "true",
         }
 
     return _fallback_contact_from_lead(lead)
@@ -561,7 +518,7 @@ def merge_leads(limit: int = 0) -> list[dict]:
             skipped_no_target += 1
             print(
                 f"[Workflow 6] Skipping {lead.get('company_name', '?')} — "
-                "no usable named or generic contact"
+                "no usable named contact"
             )
             continue
 

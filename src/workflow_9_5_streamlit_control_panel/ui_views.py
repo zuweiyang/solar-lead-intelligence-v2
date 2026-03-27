@@ -739,17 +739,67 @@ def _compute_runner_env_hash(values: dict[str, str]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def _is_sensitive_runner_env_key(key: str) -> bool:
+    upper = (key or "").strip().upper()
+    if not upper:
+        return False
+    sensitive_suffixes = (
+        "_API_KEY",
+        "_PASSWORD",
+        "_SECRET",
+        "_TOKEN",
+    )
+    if upper.endswith(sensitive_suffixes):
+        return True
+    return upper in {
+        "GOOGLE_MAPS_API_KEY",
+        "APOLLO_API_KEY",
+        "HUNTER_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "EMAIL_PASSWORD",
+        "SMTP_PASSWORD",
+        "GMAIL_APP_PASSWORD",
+    }
+
+
+def _mask_runner_env_value(key: str, value: str) -> str:
+    value = "" if value is None else str(value)
+    if not value:
+        return ""
+    if not _is_sensitive_runner_env_key(key):
+        return value
+    if len(value) <= 8:
+        return "*" * len(value)
+    return f"{value[:4]}...{value[-4:]}"
+
+
+def _compute_runner_env_value_hash(value: str) -> str:
+    raw = "" if value is None else str(value)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
 def _write_scheduler_env_state(pid: int) -> None:
     """Persist the tracked env snapshot used to launch the current runner."""
     try:
         values = _load_current_runner_env_values()
+        masked_values = {
+            key: _mask_runner_env_value(key, value)
+            for key, value in values.items()
+        }
+        value_hashes = {
+            key: _compute_runner_env_value_hash(value)
+            for key, value in values.items()
+        }
         payload = {
             "pid": int(pid),
             "captured_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
             "env_file": str(_ENV_FILE),
             "env_file_mtime": _ENV_FILE.stat().st_mtime if _ENV_FILE.exists() else None,
             "tracked_keys": list(_RUNNER_ENV_KEYS),
-            "tracked_values": values,
+            "tracked_values": masked_values,
+            "tracked_value_hashes": value_hashes,
             "tracked_hash": _compute_runner_env_hash(values),
         }
         _DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -785,14 +835,14 @@ def _get_scheduler_env_drift() -> dict:
         return {"requires_restart": False, "changed_keys": []}
 
     stored = _read_scheduler_env_state()
-    tracked_values = stored.get("tracked_values")
-    if not isinstance(tracked_values, dict) or not tracked_values:
+    tracked_hashes = stored.get("tracked_value_hashes")
+    if not isinstance(tracked_hashes, dict) or not tracked_hashes:
         return {"requires_restart": False, "changed_keys": []}
 
     current = _load_current_runner_env_values()
     changed_keys = [
         key for key in _RUNNER_ENV_KEYS
-        if str(tracked_values.get(key, "")) != str(current.get(key, ""))
+        if str(tracked_hashes.get(key, "")) != _compute_runner_env_value_hash(current.get(key, ""))
     ]
     return {
         "requires_restart": bool(changed_keys),

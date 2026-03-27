@@ -7,6 +7,21 @@
 
 ---
 
+## 2026-03-27 NOTE - FIRST-PRIORITY STABILIZATION PASS
+
+- Three first-priority stabilization fixes were applied together:
+  - runner env drift snapshots no longer persist raw secrets to `data/scheduler_env_state.json`
+  - `scrape` now fails at the `scrape` step when Google Places produces no usable `raw_leads.csv`, instead of surfacing later as a misleading `crawl` missing-file error
+  - first-touch email routing no longer falls back to generic-only mailboxes; only named Apollo / Hunter / website contacts are allowed into `final_send_queue.csv`
+- The env drift mechanism still works:
+  - operator-visible drift detection compares per-key hashes
+  - the persisted snapshot now stores masked values plus hashes instead of plaintext credentials
+- Operational consequence:
+  - if a run finishes enrichment/scoring with only generic addresses and no named contacts, the run is expected to end with `no_sendable_contacts`
+  - this is now considered truthful behavior, not a bug
+
+---
+
 ## PROJECT OVERVIEW
 
 **Project Name:** solar-lead-intelligence

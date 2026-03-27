@@ -169,6 +169,19 @@ def _require_file(path: Path, step: str) -> None:
         )
 
 
+def _csv_has_rows(path: Path) -> bool:
+    """Return True when a CSV exists and has at least one data row."""
+    if not path.exists():
+        return False
+    try:
+        with open(path, newline="", encoding="utf-8") as f:
+            reader = csv.reader(f)
+            next(reader, None)
+            return next(reader, None) is not None
+    except OSError:
+        return False
+
+
 def _db_sync() -> None:
     """Run CSV → database sync if the database layer is present."""
     if not DATABASE_FILE.exists():
@@ -256,6 +269,12 @@ def run_step_2_scrape(config: CampaignConfig) -> list[dict]:
     _require_file(SEARCH_TASKS_FILE, "scrape")
     from src.workflow_2_data_scraping.google_maps_scraper import run
     result = run()
+    if not result or not _csv_has_rows(RAW_LEADS_FILE):
+        raise RuntimeError(
+            "[scrape] Google Places produced no usable raw leads. "
+            "Check GOOGLE_MAPS_API_KEY, Places API access, billing, "
+            "API restrictions, or upstream scrape timeouts before continuing."
+        )
     _db_sync()
     return result
 
