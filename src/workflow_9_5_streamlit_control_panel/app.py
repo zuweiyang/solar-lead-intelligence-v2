@@ -21,6 +21,7 @@ import streamlit as st
 
 from src.workflow_9_5_streamlit_control_panel.debug_log import log
 from src.workflow_9_queue_scheduler.control_panel_heartbeat import (
+    start_control_panel_heartbeat_thread,
     write_control_panel_heartbeat,
 )
 
@@ -55,6 +56,7 @@ st.set_page_config(
 
 def main() -> None:
     log.app("-- main() render cycle start --")
+    start_control_panel_heartbeat_thread()
     write_control_panel_heartbeat("streamlit_main")
 
     render_header()

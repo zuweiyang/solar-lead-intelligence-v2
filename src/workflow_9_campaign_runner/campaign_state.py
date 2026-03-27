@@ -16,6 +16,7 @@ from typing import Any
 
 from config.settings import CAMPAIGN_RUN_STATE_FILE, RUNS_DIR
 from src.workflow_9_campaign_runner.campaign_config import CampaignConfig
+from src.utils.text_normalization import normalize_text, normalize_value
 
 # Valid status values
 STATUS_INITIALIZED = "initialized"
@@ -53,7 +54,7 @@ def _slugify(value: str) -> str:
       "Los Angeles" -> "los-angeles"
       "São Paulo"   -> "sao-paulo"
     """
-    normalized = unicodedata.normalize("NFKD", value or "")
+    normalized = unicodedata.normalize("NFKD", normalize_text(value or ""))
     ascii_text = normalized.encode("ascii", "ignore").decode("ascii")
     slug = re.sub(r"[^a-zA-Z0-9]+", "-", ascii_text.lower()).strip("-")
     return slug
@@ -86,19 +87,20 @@ def build_campaign_id(config: CampaignConfig, now: datetime | None = None) -> st
 def _config_to_dict(config: CampaignConfig) -> dict:
     """Serialize CampaignConfig to a plain dict for JSON storage."""
     return {
-        "country":          config.country,
-        "region":           config.region,
-        "city":             config.city,
-        "base_city":        config.base_city,
+        "country":          normalize_text(config.country),
+        "region":           normalize_text(config.region),
+        "city":             normalize_text(config.city),
+        "base_city":        normalize_text(config.base_city),
         "metro_mode":       config.metro_mode,
-        "metro_sub_cities": list(config.metro_sub_cities),
-        "search_cities":    list(config.search_cities),
+        "metro_sub_cities": normalize_value(list(config.metro_sub_cities)),
+        "search_cities":    normalize_value(list(config.search_cities)),
         "keyword_mode":     config.keyword_mode,
-        "keywords":         config.keywords,
+        "keywords":         normalize_value(config.keywords),
         "company_limit":    config.company_limit,
         "crawl_limit":      config.crawl_limit,
         "enrich_limit":     config.enrich_limit,
         "send_mode":        config.send_mode,
+        "auto_cloud_deploy": config.auto_cloud_deploy,
         "run_until":        config.run_until,
         "resume":           config.resume,
         "dry_run":          config.dry_run,
@@ -201,6 +203,7 @@ def load_campaign_state(path: Path = CAMPAIGN_RUN_STATE_FILE) -> dict | None:
 
 def save_campaign_state(state: dict, path: Path = CAMPAIGN_RUN_STATE_FILE) -> None:
     """Write campaign state to disk."""
+    state = normalize_value(state)
     _write_json(path, state)
     if path == CAMPAIGN_RUN_STATE_FILE:
         campaign_id = str(state.get("campaign_id") or "").strip()

@@ -155,9 +155,9 @@ class TestPolicyActionMapping:
         assert action == POLICY_HOLD
         assert "hold" in reason or "catchall" in reason
 
-    def test_generic_pool_only_maps_to_generic_only(self):
+    def test_generic_pool_only_maps_to_block(self):
         action, reason = decide_policy("generic_pool_only", True, True, True)
-        assert action == POLICY_GENERIC_ONLY
+        assert action == POLICY_BLOCK
         assert "generic" in reason
 
     def test_block_maps_to_block(self):
@@ -256,16 +256,16 @@ class TestPrimaryContactEnforcement:
 # ===========================================================================
 
 class TestGenericHandling:
-    """Generic mailboxes produce generic_only or block, not queue_normal."""
+    """Generic mailboxes are blocked and never promoted to sendable queues."""
 
-    def test_unverified_generic_is_generic_only(self):
+    def test_unverified_generic_is_blocked(self):
         action, reason = decide_policy("", True, False, True)
-        assert action == POLICY_GENERIC_ONLY
+        assert action == POLICY_BLOCK
         assert "generic" in reason
 
-    def test_verified_generic_pool_only_is_generic_only(self):
+    def test_verified_generic_pool_only_is_blocked(self):
         action, reason = decide_policy("generic_pool_only", True, True, True)
-        assert action == POLICY_GENERIC_ONLY
+        assert action == POLICY_BLOCK
 
     def test_named_contact_unverified_is_queue_limited(self):
         action, reason = decide_policy("", False, False, True)
@@ -286,8 +286,8 @@ class TestGenericHandling:
         assert result["generic_primary"] == 1
         assert result["named_primary"] == 0
 
-    def test_generic_only_company_not_treated_as_error(self, tmp_path):
-        """Generic-only contact as primary is acceptable, not an error."""
+    def test_generic_mailbox_company_not_treated_as_error(self, tmp_path):
+        """Generic-mailbox contact as primary is acceptable, but it is blocked."""
         paths = _make_run_paths(tmp_path)
         row = _make_scored_row(
             kp_email="info@solar.com",
@@ -298,7 +298,8 @@ class TestGenericHandling:
 
         result = run(paths=paths)
         assert result["errors"] == 0
-        assert result["generic_only"] == 1
+        assert result["generic_only"] == 0
+        assert result["block"] == 1
 
     def test_generic_contact_is_not_queue_normal(self, tmp_path):
         paths = _make_run_paths(tmp_path)
@@ -487,7 +488,7 @@ class TestSummaryReporting:
         # E3 → hold
         r3 = _make_scored_row(place_id="p3", kp_email="e3@co.com",
                                send_eligibility="hold", is_primary_contact="true")
-        # E4 → generic_only
+        # E4 → block
         r4 = _make_scored_row(place_id="p4", kp_email="info@co.com",
                                send_eligibility="generic_pool_only",
                                is_generic_mailbox="true", is_primary_contact="true")
@@ -502,8 +503,8 @@ class TestSummaryReporting:
         assert result["queue_normal"]  == 1
         assert result["queue_limited"] == 1
         assert result["hold"]          == 1
-        assert result["generic_only"]  == 1
-        assert result["block"]         == 1
+        assert result["generic_only"]  == 0
+        assert result["block"]         == 2
 
     def test_named_vs_generic_primary_counts(self, tmp_path):
         paths = _make_run_paths(tmp_path)

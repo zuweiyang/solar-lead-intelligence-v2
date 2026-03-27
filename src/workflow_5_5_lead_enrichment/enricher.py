@@ -46,6 +46,11 @@ HUNTER_DELAY     = 3.0   # Hunter free plan: stricter rate limit
 # of burning quota on retries that will also fail.
 _PROVIDER_RATE_LIMITED: dict[str, bool] = {}
 
+# Timestamp of the last campaign-state heartbeat written during enrichment.
+# Reset at the start of run() alongside the other per-run globals.
+_last_enrichment_heartbeat: float = 0.0
+_ENRICHMENT_HEARTBEAT_INTERVAL = 60  # seconds
+
 # Per-run counters — accumulate across all enrich_lead_multi() calls.
 # Read via get_enrichment_counters() for end-of-run summaries.
 _ENRICHMENT_COUNTERS: dict[str, int] = {
@@ -62,6 +67,57 @@ _ENRICHMENT_COUNTERS: dict[str, int] = {
     "mock_ok":              0,
     "none_ok":              0,
 }
+
+
+def _current_campaign_id() -> str:
+    """Best-effort lookup of the active campaign id for provider-level logs."""
+    try:
+        from src.workflow_9_campaign_runner.campaign_state import load_campaign_state
+
+        state = load_campaign_state() or {}
+        return str(state.get("campaign_id") or "").strip()
+    except Exception:
+        return ""
+
+
+def _log_provider_event(
+    provider: str,
+    status: str,
+    company_name: str,
+    domain: str,
+    detail: str = "",
+) -> None:
+    """Append lightweight enrich-provider logs to the campaign runner log."""
+    campaign_id = _current_campaign_id()
+    if not campaign_id:
+        return
+    try:
+        from src.workflow_9_campaign_runner.campaign_logger import append_campaign_log
+
+        step_name = f"enrich_{provider}"
+        target = company_name or domain or "(unknown company)"
+        message = f"{provider} -> {target}"
+        if detail:
+            message = f"{message} | {detail}"
+        append_campaign_log(campaign_id, step_name, status, message)
+    except Exception:
+        pass
+
+
+def _write_enrichment_heartbeat(current: int, total: int) -> None:
+    """Touch campaign_run_state.json updated_at so stale-lock recovery does
+    not mistake a long enrichment run for a crashed process."""
+    try:
+        from src.workflow_9_campaign_runner.campaign_state import (
+            load_campaign_state, save_campaign_state,
+        )
+        state = load_campaign_state()
+        if state and state.get("status") == "running":
+            from datetime import datetime, timezone
+            state["updated_at"] = datetime.now(timezone.utc).isoformat()
+            save_campaign_state(state)
+    except Exception:
+        pass  # Never block enrichment on a heartbeat failure
 
 
 def _inc(key: str, n: int = 1) -> None:
@@ -879,6 +935,7 @@ def enrich_lead_multi(lead: dict, index: int = 0, max_contacts: int = 3) -> list
 
     Slot-filling order: Apollo → Hunter → website → mock (no keys).
     """
+    company_name = str(lead.get("company_name") or "").strip()
     domain = _domain(lead.get("website", ""))
     base   = {
         **lead,
@@ -898,6 +955,8 @@ def enrich_lead_multi(lead: dict, index: int = 0, max_contacts: int = 3) -> list
     # Step 1 — Apollo People Search (paid plan) + org enrich (free plan, side-effect)
     if APOLLO_API_KEY and not _PROVIDER_RATE_LIMITED.get("apollo"):
         _inc("apollo_attempts")
+        apollo_started = time.time()
+        _log_provider_event("apollo", "started", company_name, domain)
         try:
             try:
                 _apollo_org_enrich(domain)
@@ -910,21 +969,54 @@ def enrich_lead_multi(lead: dict, index: int = 0, max_contacts: int = 3) -> list
                 contacts.append((kp, "apollo"))
             if contacts:
                 _inc("apollo_ok")
+            elapsed = round(time.time() - apollo_started, 2)
+            _log_provider_event(
+                "apollo",
+                "completed",
+                company_name,
+                domain,
+                detail=f"elapsed={elapsed}s contacts={len(kps)} selected={min(len(kps), max_contacts)}",
+            )
             time.sleep(RATE_LIMIT_DELAY)
         except Exception as exc:
             if _is_rate_limit_error(exc):
                 _mark_rate_limited("apollo", domain)
                 _inc("apollo_rate_limited")
+                elapsed = round(time.time() - apollo_started, 2)
+                _log_provider_event(
+                    "apollo",
+                    "failed",
+                    company_name,
+                    domain,
+                    detail=f"elapsed={elapsed}s rate_limited=true error={exc}",
+                )
             else:
                 _inc("apollo_errors")
                 print(f"[Workflow 5.5]   Apollo error for {domain}: {exc}")
+                elapsed = round(time.time() - apollo_started, 2)
+                _log_provider_event(
+                    "apollo",
+                    "failed",
+                    company_name,
+                    domain,
+                    detail=f"elapsed={elapsed}s error={exc}",
+                )
     elif APOLLO_API_KEY and _PROVIDER_RATE_LIMITED.get("apollo"):
         print(f"[Workflow 5.5]   Apollo skipped (rate-limited this run) for {domain}")
+        _log_provider_event(
+            "apollo",
+            "skipped",
+            company_name,
+            domain,
+            detail="rate-limited for this run",
+        )
 
     # Step 2 — Hunter (fill remaining slots)
     remaining = max_contacts - len(contacts)
     if HUNTER_API_KEY and remaining > 0 and not _PROVIDER_RATE_LIMITED.get("hunter"):
         _inc("hunter_attempts")
+        hunter_started = time.time()
+        _log_provider_event("hunter", "started", company_name, domain)
         try:
             kps  = _query_hunter_multi(domain, max_results=remaining)
             seen = {c[0]["kp_email"] for c in contacts}
@@ -938,21 +1030,54 @@ def enrich_lead_multi(lead: dict, index: int = 0, max_contacts: int = 3) -> list
                     added += 1
             if added:
                 _inc("hunter_ok")
+            elapsed = round(time.time() - hunter_started, 2)
+            _log_provider_event(
+                "hunter",
+                "completed",
+                company_name,
+                domain,
+                detail=f"elapsed={elapsed}s contacts={len(kps)} selected={added}",
+            )
         except Exception as exc:
             if _is_rate_limit_error(exc):
                 _mark_rate_limited("hunter", domain)
                 _inc("hunter_rate_limited")
+                elapsed = round(time.time() - hunter_started, 2)
+                _log_provider_event(
+                    "hunter",
+                    "failed",
+                    company_name,
+                    domain,
+                    detail=f"elapsed={elapsed}s rate_limited=true error={exc}",
+                )
             else:
                 _inc("hunter_errors")
                 print(f"[Workflow 5.5]   Hunter error for {domain}: {exc}")
+                elapsed = round(time.time() - hunter_started, 2)
+                _log_provider_event(
+                    "hunter",
+                    "failed",
+                    company_name,
+                    domain,
+                    detail=f"elapsed={elapsed}s error={exc}",
+                )
         finally:
             time.sleep(HUNTER_DELAY)
     elif HUNTER_API_KEY and remaining > 0 and _PROVIDER_RATE_LIMITED.get("hunter"):
         print(f"[Workflow 5.5]   Hunter skipped (rate-limited this run) for {domain}")
+        _log_provider_event(
+            "hunter",
+            "skipped",
+            company_name,
+            domain,
+            detail="rate-limited for this run",
+        )
 
     # Step 3 — Website contacts (fill remaining slots)
     remaining = max_contacts - len(contacts)
     if remaining > 0:
+        website_started = time.time()
+        _log_provider_event("website", "started", company_name, domain)
         site_kps   = _query_website_contact_multi(lead, max_results=remaining)
         seen       = {c[0]["kp_email"] for c in contacts}
         site_phone = ""
@@ -973,6 +1098,18 @@ def enrich_lead_multi(lead: dict, index: int = 0, max_contacts: int = 3) -> list
                 added += 1
         if added:
             _inc("website_ok")
+        elapsed = round(time.time() - website_started, 2)
+        _log_provider_event(
+            "website",
+            "completed",
+            company_name,
+            domain,
+            detail=(
+                f"elapsed={elapsed}s contacts={len(site_kps)} selected={added} "
+                f"site_phone={'yes' if bool(site_phone) else 'no'} "
+                f"whatsapp={'yes' if bool(whatsapp_phone) else 'no'}"
+            ),
+        )
         if site_phone and not base.get("site_phone"):
             base["site_phone"] = site_phone
         if not whatsapp_phone:
@@ -1129,9 +1266,11 @@ def run(limit: int = 0, paths: RunPaths | None = None) -> list[dict]:
 
     # Reset per-run state so a second call in the same process (tests, future long-lived
     # runners) starts clean and doesn't inherit rate-limit flags or counter totals.
+    global _last_enrichment_heartbeat
     _PROVIDER_RATE_LIMITED.clear()
     for k in _ENRICHMENT_COUNTERS:
         _ENRICHMENT_COUNTERS[k] = 0
+    _last_enrichment_heartbeat = 0.0
     global _site_contact_cache, _site_contact_cache_source
     _site_contact_cache = None
     _site_contact_cache_source = None
@@ -1153,6 +1292,14 @@ def run(limit: int = 0, paths: RunPaths | None = None) -> list[dict]:
     for i, lead in enumerate(leads, 1):
         name = lead.get("company_name") or lead.get("website", f"record {i}")
         print(f"[Workflow 5.5] ({i}/{len(leads)}) {name}")
+
+        # Heartbeat: keep campaign_run_state.json updated_at fresh so the
+        # stale-lock reclaim (2-hour idle threshold) does not fire during a
+        # long rate-limited enrichment batch.
+        now = time.time()
+        if now - _last_enrichment_heartbeat >= _ENRICHMENT_HEARTBEAT_INTERVAL:
+            _write_enrichment_heartbeat(i, len(leads))
+            _last_enrichment_heartbeat = now
 
         contacts = enrich_lead_multi(lead, index=i - 1)
 

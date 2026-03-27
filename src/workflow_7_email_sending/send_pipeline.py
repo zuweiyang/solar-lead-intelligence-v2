@@ -271,7 +271,6 @@ def run(
         "breaker_blocked": 0,
         "policy_blocked": 0,
         "policy_held": 0,
-        "policy_generic_only": 0,
         "policy_queue_limited": 0,
         "policy_queue_normal": 0,
         "policy_missing": 0,
@@ -379,12 +378,44 @@ def run(
             continue
 
         if policy_action == POLICY_GENERIC_ONLY:
-            counters["policy_generic_only"] += 1
-            print(f"[Workflow 7]   GENERIC FALLBACK - {name} ({policy_reason or policy_action})")
+            counters["policy_blocked"] += 1
+            counters["blocked"] += 1
+            log_row = build_log_row(
+                record,
+                send_decision="policy_blocked",
+                send_status="blocked",
+                decision_reason="legacy_generic_only_blocked",
+                campaign_id=campaign_id,
+                send_mode=effective_mode,
+                send_policy_action=policy_action,
+                send_policy_reason=policy_reason or "legacy_generic_only_blocked",
+            )
+            append_send_log(log_row)
+            counters["processed"] += 1
+            print(f"[Workflow 7]   LEGACY GENERIC BLOCKED - {name} ({policy_reason or policy_action})")
+            continue
         elif policy_action == POLICY_QUEUE_LIMITED:
             counters["policy_queue_limited"] += 1
         elif policy_action == POLICY_QUEUE_NORMAL:
             counters["policy_queue_normal"] += 1
+
+        if (record.get("send_target_type") or "").strip().lower() == "generic":
+            counters["policy_blocked"] += 1
+            counters["blocked"] += 1
+            log_row = build_log_row(
+                record,
+                send_decision="policy_blocked",
+                send_status="blocked",
+                decision_reason="generic_targets_disabled",
+                campaign_id=campaign_id,
+                send_mode=effective_mode,
+                send_policy_action=policy_action,
+                send_policy_reason=policy_reason or "generic_targets_disabled",
+            )
+            append_send_log(log_row)
+            counters["processed"] += 1
+            print(f"[Workflow 7]   GENERIC TARGET BLOCKED - {name} (generic first-touch disabled)")
+            continue
 
         combined_logs = recent_logs + live_log
         guard = run_checks(
@@ -505,7 +536,6 @@ def run(
         f"  Policy breakdown:\n"
         f"    queue_normal  : {counters['policy_queue_normal']}\n"
         f"    queue_limited : {counters['policy_queue_limited']}\n"
-        f"    generic_only  : {counters['policy_generic_only']}\n"
         f"    held          : {counters['policy_held']}\n"
         f"    blocked       : {counters['policy_blocked']}\n"
         f"    missing       : {counters['policy_missing']}\n"
@@ -539,7 +569,6 @@ def _empty_summary() -> dict:
             "breaker_blocked",
             "policy_blocked",
             "policy_held",
-            "policy_generic_only",
             "policy_queue_limited",
             "policy_queue_normal",
             "policy_missing",

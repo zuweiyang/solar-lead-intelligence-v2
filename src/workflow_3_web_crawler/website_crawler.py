@@ -15,6 +15,7 @@ from src.market_localization import (
     get_crawl_home_hints,
     get_crawl_target_paths,
 )
+from src.utils.text_normalization import normalize_text, normalize_value
 
 MAX_PAGES_PER_SITE = 5
 REQUEST_TIMEOUT    = 10
@@ -112,7 +113,7 @@ def crawl_site(base_url: str, country: str = "") -> dict[str, str]:
 
 def load_leads() -> list[dict]:
     with open(RAW_LEADS_FILE, newline="", encoding="utf-8") as f:
-        return list(csv.DictReader(f))
+        return [normalize_value(row) for row in csv.DictReader(f)]
 
 
 # Directory / social domains that are not crawlable company websites.
@@ -212,8 +213,8 @@ def run(limit: int = 0) -> list[dict]:
             # and fall back to keyword rules — better than silently dropping the lead.
             print(f"[Workflow 3]   → unreachable, keeping stub for classification")
             results.append({
-                "place_id": place_id,
-                "website":  website,
+                "place_id": normalize_text(place_id),
+                "website":  normalize_text(website),
                 "pages":    {},
             })
             time.sleep(CRAWL_DELAY_SECONDS)
@@ -221,14 +222,14 @@ def run(limit: int = 0) -> list[dict]:
 
         print(f"[Workflow 3]   → {len(pages)} page(s) fetched")
         results.append({
-            "place_id": place_id,
-            "website":  website,
+            "place_id": normalize_text(place_id),
+            "website":  normalize_text(website),
             "pages":    pages,
         })
 
         time.sleep(CRAWL_DELAY_SECONDS)
 
-    COMPANY_PAGES_FILE.write_text(json.dumps(results, indent=2, ensure_ascii=False),
+    COMPANY_PAGES_FILE.write_text(json.dumps(normalize_value(results), indent=2, ensure_ascii=False),
                                   encoding="utf-8")
     print(f"\n[Workflow 3] Saved {len(results)} sites → {COMPANY_PAGES_FILE}")
     return results

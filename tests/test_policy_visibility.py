@@ -395,7 +395,7 @@ class TestCampaignStatusPolicySection:
             "total": 5, "sent": 2, "dry_run": 1, "failed": 0,
             "blocked": 1, "held": 1, "deferred": 0, "breaker_blocked": 0,
             "policy_blocked": 1, "policy_held": 1,
-            "policy_generic_only": 0, "policy_queue_limited": 1,
+            "policy_queue_limited": 1,
             "policy_queue_normal": 2, "policy_missing": 0,
         }
         rows = [_make_send_log_row()]
@@ -441,7 +441,7 @@ class TestCrossStageComparison:
             "total": 10, "sent": 5, "dry_run": 0, "failed": 1,
             "blocked": 4, "held": 0, "deferred": 0, "breaker_blocked": 0,
             "policy_blocked": 4, "policy_held": 0,
-            "policy_generic_only": 0, "policy_queue_limited": 1,
+            "policy_queue_limited": 1,
             "policy_queue_normal": 5, "policy_missing": 0,
         }
 

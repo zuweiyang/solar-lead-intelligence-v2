@@ -43,11 +43,11 @@ def decide_policy(
     1. No email address at all → block (no contact to send to)
     2. Verified block (E0, eligibility=="block") → block
     3. Verified hold (E3, eligibility=="hold") → hold
-    4. Verified generic_pool_only (E4) → generic_only
+    4. Verified generic_pool_only (E4) → block
     5. Verified allow_limited (E2) → queue_limited
     6. Verified allow (E1) → queue_normal
     7. No verification data + no email → block  (handled in case 1)
-    8. No verification data + generic mailbox → generic_only  (conservative)
+    8. No verification data + generic mailbox → block
     9. No verification data + named email → queue_limited  (unverified, caution)
 
     Args:
@@ -70,7 +70,7 @@ def decide_policy(
         if send_eligibility == ELIGIBILITY_HOLD:
             return POLICY_HOLD, "verified_e3_catchall"
         if send_eligibility == ELIGIBILITY_GENERIC_POOL:
-            return POLICY_GENERIC_ONLY, "verified_e4_generic_mailbox"
+            return POLICY_BLOCK, "verified_e4_generic_mailbox"
         if send_eligibility == ELIGIBILITY_ALLOW_LIMITED:
             return POLICY_QUEUE_LIMITED, "verified_e2_limited"
         if send_eligibility == ELIGIBILITY_ALLOW:
@@ -80,7 +80,7 @@ def decide_policy(
 
     # ── Fallback paths (no verification data) ────────────────────────────
     if is_generic:
-        return POLICY_GENERIC_ONLY, "unverified_generic_mailbox"
+        return POLICY_BLOCK, "unverified_generic_mailbox"
 
     return POLICY_QUEUE_LIMITED, "unverified_named_email"
 

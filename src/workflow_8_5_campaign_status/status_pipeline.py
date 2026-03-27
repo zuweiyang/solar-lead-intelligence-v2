@@ -110,7 +110,6 @@ def _build_policy_section(policy_summary: dict, send_batch: dict) -> dict:
         "breaker_blocked",
         "policy_blocked",
         "policy_held",
-        "policy_generic_only",
         "policy_queue_limited",
         "policy_queue_normal",
         "policy_missing",
@@ -178,7 +177,7 @@ def _build_quality_report(
             continue
         sendable = _as_bool(row.get("email_sendable", "")) or (
             (row.get("send_eligibility") or "").strip().lower()
-            in {"allow", "allow_limited", "generic_pool_only"}
+            in {"allow", "allow_limited"}
         )
         if not sendable:
             continue
@@ -189,7 +188,7 @@ def _build_quality_report(
         if is_generic:
             generic_company_keys.add(key)
 
-    generic_only_companies = generic_company_keys - named_company_keys
+    generic_mailbox_only_companies = generic_company_keys - named_company_keys
     queue_complete, queue_named, queue_generic = _queue_contact_integrity(final_queue_rows)
     final_queue_count = len(final_queue_rows)
 
@@ -204,7 +203,7 @@ def _build_quality_report(
         "raw_leads": len(raw_rows),
         "qualified_leads": len(qualified_rows),
         "named_contact_companies": len(named_company_keys),
-        "generic_only_companies": len(generic_only_companies),
+        "generic_mailbox_only_companies": len(generic_mailbox_only_companies),
         "companies_with_any_sendable_contact": len(companies_with_any_sendable),
         "final_send_queue_count": final_queue_count,
         "final_named_sends_count": send_batch_data.get("final_named_sends", queue_named),
@@ -335,7 +334,7 @@ def run(
         f"\n  Quality - raw: {quality_report['raw_leads']}  "
         f"qualified: {quality_report['qualified_leads']}  "
         f"named companies: {quality_report['named_contact_companies']}  "
-        f"generic-only: {quality_report['generic_only_companies']}"
+        f"generic-mailbox-only: {quality_report['generic_mailbox_only_companies']}"
     )
     print(f"\n[Workflow 8.5] -> {status_output_path.name} ({len(classified)} rows)")
     print(f"[Workflow 8.5] -> {summary_output_path.name}")

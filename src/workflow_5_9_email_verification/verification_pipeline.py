@@ -124,7 +124,12 @@ def run(
             )
             counters["no_email"] += 1
         else:
-            result = verify_email(email, provider, source_mode=source_mode)
+            result = verify_email(
+                email,
+                provider,
+                source_mode=source_mode,
+                country=(row.get("country") or "").strip(),
+            )
             counters["verified"] += 1
             if result.error:
                 counters["errors"] += 1

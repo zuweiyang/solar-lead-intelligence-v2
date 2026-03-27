@@ -24,25 +24,30 @@ from src.market_localization import get_generic_mailbox_local_parts
 # Generic mailbox (role-address) prefixes
 # ---------------------------------------------------------------------------
 
-_GENERIC_PREFIXES: frozenset[str] = frozenset(
-    tuple(get_generic_mailbox_local_parts())
-    + tuple(get_generic_mailbox_local_parts("Brazil"))
-    + (
-        "procurement",
-        "purchasing",
+def _generic_prefixes(country: str = "") -> frozenset[str]:
+    return frozenset(
+        tuple(get_generic_mailbox_local_parts(country))
+        + (
+            "procurement",
+            "purchasing",
+        )
     )
-)
 
 
-def is_generic_mailbox(email: str) -> bool:
+def is_generic_mailbox(email: str, country: str = "") -> bool:
     """
     Return True if the local-part (prefix) of the email address is a well-known
     role-based / generic address (e.g. info@, sales@, support@).
 
     Comparison is case-insensitive.  Returns False for malformed addresses.
     """
-    local = email.lower().partition("@")[0].strip()
-    return local in _GENERIC_PREFIXES
+    email = email.lower().strip()
+    if not country and "@" in email:
+        domain = email.partition("@")[2].strip()
+        if domain.endswith(".br"):
+            country = "Brazil"
+    local = email.partition("@")[0].strip()
+    return local in _generic_prefixes(country)
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +105,7 @@ def verify_email(
     email: str,
     provider: AbstractVerificationProvider,
     source_mode: str = "live",
+    country: str = "",
 ) -> VerificationResult:
     """
     Verify a single email address using the provided provider instance.
@@ -112,7 +118,7 @@ def verify_email(
     Returns a VerificationResult with all tier, eligibility, pool, and metadata fields set.
     """
     email_lower = email.lower().strip()
-    generic = is_generic_mailbox(email_lower)
+    generic = is_generic_mailbox(email_lower, country=country)
 
     resp = provider.verify(email_lower)
     tier = _normalize_to_tier(resp, generic)

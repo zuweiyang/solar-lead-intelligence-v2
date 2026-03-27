@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import Literal
 
 from config.settings import CAMPAIGN_QUEUE_FILE, CAMPAIGN_QUEUE_PAUSE_FLAG
+from src.utils.text_normalization import normalize_text, normalize_value
 
 # ---------------------------------------------------------------------------
 # Status constants
@@ -144,9 +145,9 @@ def add_job(
     """Add a new pending job to the queue. Returns the created job dict."""
     job: dict = {
         "job_id":          _new_job_id(),
-        "location":        location.strip(),
-        "country":         country.strip(),
-        "region":          region.strip(),
+        "location":        normalize_text(location.strip()),
+        "country":         normalize_text(country.strip()),
+        "region":          normalize_text(region.strip()),
         "status":          STATUS_PENDING,
         "priority":        int(priority),
         "send_mode":       send_mode,
@@ -158,12 +159,12 @@ def add_job(
         "completed_at":    "",
         "error":           "",
         "keyword_mode":    keyword_mode,
-        "keywords":        list(keywords or []),
+        "keywords":        normalize_value(list(keywords or [])),
         "company_limit":   int(company_limit),
         "crawl_limit":     int(crawl_limit),
         "enrich_limit":    int(enrich_limit),
         "metro_mode":      metro_mode,
-        "metro_sub_cities": list(metro_sub_cities or []),
+        "metro_sub_cities": normalize_value(list(metro_sub_cities or [])),
     }
     jobs = _load_raw()
     jobs.append(job)

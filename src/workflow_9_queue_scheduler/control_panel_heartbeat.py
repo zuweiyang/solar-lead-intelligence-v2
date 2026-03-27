@@ -9,15 +9,26 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from pathlib import Path
 
 _ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 _DATA_DIR = _ROOT_DIR / "data"
-_CONTROL_PANEL_HEARTBEAT_FILE = _DATA_DIR / "control_panel_heartbeat.json"
+_HEARTBEAT_PATH_OVERRIDE = os.getenv("CONTROL_PANEL_HEARTBEAT_FILE", "").strip()
+_CONTROL_PANEL_HEARTBEAT_FILE = (
+    Path(_HEARTBEAT_PATH_OVERRIDE)
+    if _HEARTBEAT_PATH_OVERRIDE
+    else _DATA_DIR / "control_panel_heartbeat.json"
+)
 _CONTROL_PANEL_HEARTBEAT_TIMEOUT_SECONDS = float(
     os.getenv("CONTROL_PANEL_HEARTBEAT_TIMEOUT_SECONDS", "20")
 )
+_CONTROL_PANEL_HEARTBEAT_INTERVAL_SECONDS = float(
+    os.getenv("CONTROL_PANEL_HEARTBEAT_INTERVAL_SECONDS", "5")
+)
+_HEARTBEAT_THREAD: threading.Thread | None = None
+_HEARTBEAT_STOP = threading.Event()
 
 
 def _now_ts() -> float:
@@ -74,3 +85,32 @@ def get_control_panel_heartbeat_age_seconds() -> float | None:
     except (TypeError, ValueError):
         return None
     return max(_now_ts() - last_seen, 0.0)
+
+
+def _heartbeat_loop(source: str) -> None:
+    """Background writer bound to the lifetime of the Streamlit process."""
+    interval = max(_CONTROL_PANEL_HEARTBEAT_INTERVAL_SECONDS, 1.0)
+    while not _HEARTBEAT_STOP.wait(interval):
+        write_control_panel_heartbeat(source)
+
+
+def start_control_panel_heartbeat_thread(source: str = "streamlit_process") -> None:
+    """
+    Start a singleton background heartbeat writer for the Streamlit process.
+
+    This makes liveness depend on the control-panel process staying alive,
+    rather than on frequent page rerenders, which can be throttled by the
+    browser or paused during long-running UI work.
+    """
+    global _HEARTBEAT_THREAD
+    if _HEARTBEAT_THREAD and _HEARTBEAT_THREAD.is_alive():
+        return
+    _HEARTBEAT_STOP.clear()
+    write_control_panel_heartbeat(source)
+    _HEARTBEAT_THREAD = threading.Thread(
+        target=_heartbeat_loop,
+        args=(source,),
+        name="control-panel-heartbeat",
+        daemon=True,
+    )
+    _HEARTBEAT_THREAD.start()

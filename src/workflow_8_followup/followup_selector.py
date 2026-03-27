@@ -7,7 +7,7 @@ from pathlib import Path
 
 from config.settings import (
     SEND_LOGS_FILE, ENGAGEMENT_SUMMARY_FILE, FOLLOWUP_LOGS_FILE,
-    FOLLOWUP_MAX_STAGE, SCORED_CONTACTS_FILE,
+    FOLLOWUP_MAX_STAGE,
 )
 
 SENT_STATUSES = {"sent", "dry_run"}
@@ -119,52 +119,6 @@ def _company_key(row: dict) -> str:
     return f"name:{name}" if name else ""
 
 
-def _load_generic_fallback_index(path: Path = SCORED_CONTACTS_FILE) -> dict[str, dict]:
-    """
-    Return one usable generic mailbox per company from scored_contacts.csv.
-
-    This supports the routing rule:
-    initial send -> named contact
-    no reply after the first delay -> generic mailbox fallback
-    """
-    if not path.exists():
-        return {}
-
-    with open(path, newline="", encoding="utf-8") as f:
-        rows = list(csv.DictReader(f))
-
-    index: dict[str, dict] = {}
-    for row in rows:
-        key = _company_key(row)
-        if not key:
-            continue
-        email = (row.get("kp_email") or "").strip()
-        if not email:
-            continue
-        is_generic = (row.get("is_generic_mailbox") or "").strip().lower() == "true"
-        if not is_generic:
-            continue
-        sendable = (row.get("email_sendable") or "").strip().lower() == "true"
-        eligibility = (row.get("send_eligibility") or "").strip().lower()
-        if not sendable and eligibility not in {"allow", "allow_limited", "generic_pool_only"}:
-            continue
-        current = index.get(key)
-        if current is None:
-            index[key] = row
-            continue
-        try:
-            current_rank = int(current.get("contact_priority_rank") or current.get("contact_rank") or 999)
-        except (TypeError, ValueError):
-            current_rank = 999
-        try:
-            new_rank = int(row.get("contact_priority_rank") or row.get("contact_rank") or 999)
-        except (TypeError, ValueError):
-            new_rank = 999
-        if new_rank < current_rank:
-            index[key] = row
-    return index
-
-
 def _stage_name(n: int) -> str:
     """0 prior followups → followup_1, 1 → followup_2, etc."""
     stage_num = n + 1
@@ -222,8 +176,6 @@ def select_candidates(
     latest_per_email = _latest_send_per_email(sent_rows)
     engagement_map   = _load_engagement_by_email(engagement_path)
     prior_stages     = _load_prior_followup_stages(followup_logs_path)
-    generic_fallback = _load_generic_fallback_index()
-
     candidates: list[dict] = []
 
     for email, send_row in latest_per_email.items():
@@ -247,20 +199,6 @@ def select_candidates(
         target_email = email
         route = "same_contact"
         reason = f"Stage {stage} candidate"
-
-        company_key = _company_key(send_row)
-        generic_row = generic_fallback.get(company_key, {}) if company_key else {}
-        should_use_generic_fallback = (
-            prior_count == 0
-            and (send_row.get("send_target_type") or "").strip().lower() == "named"
-            and generic_row
-            and (generic_row.get("kp_email") or "").strip().lower() != email
-        )
-        if should_use_generic_fallback:
-            target_name = generic_row.get("kp_name", "")
-            target_email = (generic_row.get("kp_email") or "").strip().lower()
-            route = "generic_fallback_after_named"
-            reason = "Stage followup_1 generic fallback after initial named contact"
 
         candidates.append({
             "company_name":     send_row.get("company_name", ""),

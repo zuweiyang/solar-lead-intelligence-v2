@@ -41,17 +41,23 @@ def _as_bool(value: str | bool) -> bool:
     return str(value or "").strip().lower() == "true"
 
 
-_GENERIC_LOCALPARTS: tuple[str, ...] = tuple(dict.fromkeys(
-    tuple(get_generic_mailbox_local_parts("brazil")) + ("ola",)
-))
+def _generic_localparts_for_country(country: str = "") -> tuple[str, ...]:
+    localparts = list(get_generic_mailbox_local_parts(country))
+    if str(country or "").strip().lower() == "brazil":
+        localparts.append("ola")
+    return tuple(dict.fromkeys(localparts))
 
 
-def _is_generic_email(email: str) -> bool:
+def _is_generic_email(email: str, country: str = "") -> bool:
     email = (email or "").strip().lower()
     if "@" not in email:
         return False
+    if not country:
+        domain = email.split("@", 1)[1]
+        if domain.endswith(".br"):
+            country = "Brazil"
     local = email.split("@", 1)[0]
-    return local in _GENERIC_LOCALPARTS
+    return local in _generic_localparts_for_country(country)
 
 
 def _contact_rank_value(row: dict) -> tuple[int, int]:
@@ -83,7 +89,7 @@ def _is_sendable_contact(row: dict) -> bool:
         return True
 
     eligibility = (row.get("send_eligibility") or "").strip().lower()
-    return eligibility in {"allow", "allow_limited", "generic_pool_only"}
+    return eligibility in {"allow", "allow_limited"}
 
 
 def _is_trusted_contact(row: dict) -> bool:
@@ -297,7 +303,8 @@ def _fallback_contact_from_lead(lead: dict) -> dict | None:
     if _is_guess_source(lead):
         return None
 
-    is_generic = _as_bool(lead.get("is_generic_mailbox", "")) or _is_generic_email(email)
+    country = (lead.get("country") or "").strip()
+    is_generic = _as_bool(lead.get("is_generic_mailbox", "")) or _is_generic_email(email, country=country)
     if is_generic:
         return None
 
@@ -344,7 +351,13 @@ def _route_contact(lead: dict, contacts_by_company: dict[str, list[dict]]) -> di
         row for row in contacts
         if (row.get("kp_name") or "").strip()
         and (row.get("kp_email") or "").strip()
-        and not (_as_bool(row.get("is_generic_mailbox", "")) or _is_generic_email(row.get("kp_email", "")))
+        and not (
+            _as_bool(row.get("is_generic_mailbox", ""))
+            or _is_generic_email(
+                row.get("kp_email", ""),
+                country=(row.get("country") or lead.get("country") or "").strip(),
+            )
+        )
         and not _is_guess_source(row)
         and _is_sendable_contact(row)
     ]

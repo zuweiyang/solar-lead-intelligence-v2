@@ -7,7 +7,8 @@
 #   queue_normal   — safe, enter normal queue
 #   queue_limited  — eligible but flagged (limited pool, unverified, etc.)
 #   hold           — do not queue; preserve for manual review
-#   generic_only   — generic mailbox path; not a standard named-contact queue entry
+#   generic_only   — legacy/deprecated generic mailbox action kept only for
+#                    backward-compatible reads of older artifacts
 #   block          — do not queue at all; preserve in blocked rows
 #
 # Backward compatibility: Workflow 6 (email_generation) continues to read
@@ -25,7 +26,7 @@ from dataclasses import dataclass, field
 POLICY_QUEUE_NORMAL   = "queue_normal"    # safe, unrestricted queue entry
 POLICY_QUEUE_LIMITED  = "queue_limited"   # queueable but limited / flagged
 POLICY_HOLD           = "hold"            # do not queue; preserve for review
-POLICY_GENERIC_ONLY   = "generic_only"    # generic mailbox path only
+POLICY_GENERIC_ONLY   = "generic_only"    # legacy only; new policy blocks generics
 POLICY_BLOCK          = "block"           # do not queue; blocked with reason
 
 ALL_POLICY_ACTIONS = [

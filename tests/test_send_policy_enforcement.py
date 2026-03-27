@@ -6,7 +6,7 @@ Tests every mandatory scenario from the ticket:
   2. hold must not proceed into automatic send execution
   3. queue_normal proceeds normally through guards and send
   4. queue_limited is flagged distinctly in counters / logs
-  5. generic_only is flagged distinctly in counters / logs
+  5. legacy generic_only rows are blocked and never reach send execution
   6. policy_action and policy_reason appear in send_logs rows
   7. policy counts appear in the batch summary (counters dict)
   8. missing queue_policy.csv → explicit warning, send proceeds (no silent bypass)
@@ -437,11 +437,11 @@ class TestPolicyQueueLimited:
 
 
 # ---------------------------------------------------------------------------
-# Tests: generic_only — policy-distinct counter, proceeds to guards
+# Tests: generic_only — legacy rows are blocked before send execution
 # ---------------------------------------------------------------------------
 
 class TestPolicyGenericOnly:
-    def test_generic_only_increments_distinct_counter(self, tmp_path):
+    def test_generic_only_is_blocked_as_legacy_path(self, tmp_path):
         from src.workflow_7_email_sending.send_pipeline import run as pipeline_run
 
         policy_path = tmp_path / "queue_policy.csv"
@@ -465,10 +465,30 @@ class TestPolicyGenericOnly:
         ):
             counters = pipeline_run(campaign_id="test_campaign", send_mode="dry_run")
 
-        assert counters["policy_generic_only"] == 1
-        assert counters["dry_run"] == 1
-        assert counters["policy_blocked"] == 0
-        assert counters["policy_held"] == 0
+        assert counters["policy_blocked"] == 1
+        assert counters["blocked"] == 1
+        assert counters["dry_run"] == 0
+
+    def test_generic_only_never_reaches_send_one(self, tmp_path):
+        from src.workflow_7_email_sending.send_pipeline import run as pipeline_run
+
+        policy_path = tmp_path / "queue_policy.csv"
+        _write_csv(policy_path, [_make_policy_row(action="generic_only", reason="verified_e4_generic_mailbox")])
+        batch_summary_path = tmp_path / "batch_summary.json"
+
+        with (
+            patch("src.workflow_7_email_sending.send_pipeline.QUEUE_POLICY_FILE", policy_path),
+            patch("src.workflow_7_email_sending.send_pipeline.load_send_queue",
+                  return_value=[_make_queue_record()]),
+            patch("src.workflow_7_email_sending.send_pipeline.load_recent_logs", return_value=[]),
+            patch("src.workflow_7_email_sending.send_pipeline.send_one") as mock_send,
+            patch("src.workflow_7_email_sending.send_pipeline.append_send_log"),
+            patch("src.workflow_7_email_sending.send_pipeline.SEND_BATCH_SUMMARY", batch_summary_path),
+            patch("src.workflow_7_email_sending.send_pipeline._TRACKING_AVAILABLE", False),
+        ):
+            pipeline_run(campaign_id="test_campaign", send_mode="dry_run")
+
+        mock_send.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -612,7 +632,7 @@ class TestBatchSummaryPolicyCounts:
         from src.workflow_7_email_sending.send_pipeline import _empty_summary
         summary = _empty_summary()
         for key in (
-            "policy_blocked", "policy_held", "policy_generic_only",
+            "policy_blocked", "policy_held",
             "policy_queue_limited", "policy_queue_normal", "policy_missing",
             "held",
         ):

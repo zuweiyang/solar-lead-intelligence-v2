@@ -10,6 +10,7 @@ from config.settings import (
     SEARCH_TASKS_FILE, RAW_LEADS_FILE,
     SCRAPE_DELAY_SECONDS, GOOGLE_MAPS_API_KEY,
 )
+from src.utils.text_normalization import normalize_text, normalize_value
 
 LEAD_FIELDS = [
     "company_name", "address", "website", "phone",
@@ -205,13 +206,13 @@ def scrape_google_maps(query: str, location: str) -> list[dict]:
             time.sleep(0.1)  # stay within per-second rate limit
 
         leads.append({
-            "company_name": place.get("name", ""),
-            "address":      place.get("formatted_address", ""),
-            "website":      details.get("website", "") or website,
-            "phone":        details.get("formatted_phone_number", "") or phone,
+            "company_name": normalize_text(place.get("name", "")),
+            "address":      normalize_text(place.get("formatted_address", "")),
+            "website":      normalize_text(details.get("website", "") or website),
+            "phone":        normalize_text(details.get("formatted_phone_number", "") or phone),
             "rating":       str(place.get("rating", "")),
-            "category":     _primary_category(place.get("types", [])),
-            "place_id":     place_id,
+            "category":     normalize_text(_primary_category(place.get("types", []))),
+            "place_id":     normalize_text(place_id),
         })
 
     return leads
@@ -230,13 +231,14 @@ def scrape_all_tasks() -> list[dict]:
     all_leads: list[dict] = []
 
     for task in tasks:
-        query = task["query"]
+        query = normalize_text(task["query"])
         print(f"[Workflow 2] Scraping: {query}")
         try:
-            leads = scrape_google_maps(query, task["location"])
+            location = normalize_text(task["location"])
+            leads = scrape_google_maps(query, location)
             for lead in leads:
-                lead["source_keyword"]  = task["keyword"]
-                lead["source_location"] = task["location"]
+                lead["source_keyword"]  = normalize_text(task["keyword"])
+                lead["source_location"] = location
             all_leads.extend(leads)
             source = "Places API (primary)"
             print(f"[Workflow 2]   → {len(leads)} results [{source}]")
@@ -255,7 +257,7 @@ def save_raw_leads(leads: list[dict]) -> None:
     with open(RAW_LEADS_FILE, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=LEAD_FIELDS, extrasaction="ignore")
         writer.writeheader()
-        writer.writerows(leads)
+        writer.writerows(normalize_value(leads))
     print(f"[Workflow 2] Saved {len(leads)} raw leads → {RAW_LEADS_FILE}")
 
 

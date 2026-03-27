@@ -1917,7 +1917,7 @@ def render_multi_run_comparison_view() -> None:
     st.header("Multi-Run Comparison")
     st.caption(
         "Recent completed queue jobs compared side by side: funnel volume, dedup loss, "
-        "repair lift, and generic-contact dependency."
+        "repair lift, and delivery-readiness."
     )
 
     rows = load_multi_run_comparison(limit=8)
@@ -1929,7 +1929,6 @@ def render_multi_run_comparison_view() -> None:
     for col in (
         "dedup_rate_pct",
         "final_queue_rate",
-        "generic_only_pct",
         "review_required_pct",
         "delivery_ready_rate",
     ):
@@ -1965,14 +1964,14 @@ def render_multi_run_comparison_view() -> None:
         "hard_blocked": "Hard Blocked",
         "repair_lift": "Repair Lift",
         "final_rejected": "Rejected",
-        "generic_only_pct": "Generic-Only %",
     })
 
     st.dataframe(display, width="stretch", hide_index=True)
     st.caption(
         "Reading guide: high `Dedup %` means overlap with recent nearby runs; high "
         "`Review %` means more records were tagged for operator confirmation instead "
-        "of auto-send; high `Generic-Only %` means the city relied heavily on generic mailboxes."
+        "of auto-send; high `Delivery-Ready %` means more qualified contacts survived "
+        "the final routing and send-policy filters."
     )
 
 

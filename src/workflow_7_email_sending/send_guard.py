@@ -69,14 +69,34 @@ _COUNTRY_BUSINESS_DAYS = {
 }
 
 _MULTIPART_PUBLIC_SUFFIXES = {
+    # Oceania / Pacific
+    "com.au",
+    "co.nz",
+    # Europe
+    "co.uk",
+    # East Asia
     "co.jp",
     "co.kr",
-    "co.nz",
-    "co.uk",
-    "com.au",
+    "com.hk",
+    "com.tw",
+    # South-East Asia
+    "com.my",
+    "com.sg",
+    "co.id",
+    "com.ph",
+    "com.vn",
+    # South Asia
+    "co.in",
+    # Latin America
     "com.br",
     "com.mx",
-    "com.sg",
+    "com.ar",
+    "com.co",
+    "com.pe",
+    # Africa / Middle East
+    "com.ng",
+    "co.za",
+    "com.eg",
 }
 
 

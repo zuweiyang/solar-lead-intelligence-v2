@@ -386,6 +386,34 @@ def _cloud_send_status_label(status: str, *, claimed: bool = False) -> str:
     return normalized
 
 
+def _deploy_status_display(status: str) -> str:
+    normalized = str(status or "").strip().lower()
+    mapping = {
+        "no_sendable_contacts": "no sendable contacts (not queued by design)",
+        "stale_handoff_redeploy": "stale handoff; redeploy ready",
+        "send_failed_redeploy": "cloud send failed; redeploy ready",
+        "not_enabled": "not enabled",
+        "completed": "completed",
+        "failed": "failed",
+        "started": "started",
+        "pending": "pending",
+    }
+    return mapping.get(normalized, normalized or "not enabled")
+
+
+def _reconciliation_display(status: str) -> str:
+    normalized = str(status or "").strip().lower()
+    mapping = {
+        "no_sendable_contacts": "no sendable contacts",
+        "currently_waiting": "currently waiting in cloud window",
+        "failed_recovery": "failed; recovery needed",
+        "historical_inconsistent": "historical state mismatch",
+        "auto_on_complete": "auto on complete",
+        "manual_deploy": "manual deploy",
+    }
+    return mapping.get(normalized, normalized or "unknown")
+
+
 def _load_queue_job(campaign_id: str) -> dict:
     if not campaign_id or not CAMPAIGN_QUEUE_FILE.exists():
         return {}
@@ -1098,6 +1126,9 @@ def load_ready_cloud_deploys(limit: int = 20) -> list[dict]:
         run_status = str(state.get("status") or queue_job.get("status") or "").strip().lower()
         if run_status != "completed":
             continue
+        if queue_count <= 0:
+            # Empty final queues are "no sendable contacts", not cloud deploy candidates.
+            continue
 
         send_status = str(cloud_send.get("cloud_send_status") or "").strip().lower()
         gcs_cloud_send = _read_run_json_from_gcs(campaign_id, "cloud_send_status.json")
@@ -1168,7 +1199,7 @@ def load_ready_cloud_deploys(limit: int = 20) -> list[dict]:
             "cloud_handoff": _cloud_handoff_label(cfg.get("auto_cloud_deploy"), send_mode),
             "run_until": str(cfg.get("run_until") or "").strip(),
             "queue_count": queue_count,
-            "deploy_status": deploy_status_label,
+            "deploy_status": _deploy_status_display(deploy_status_label),
             "cloud_send_status": _cloud_send_status_label(send_status),
             "recovery_reason": recovery_reason,
             "modified": _mtime(final_queue),
@@ -1241,8 +1272,14 @@ def load_cloud_deploy_reconciliation(limit: int = 20) -> list[dict]:
 
         deploy_status = str(deploy.get("cloud_deploy_status") or "").strip().lower() or "not_enabled"
         send_status = str(cloud_send.get("cloud_send_status") or "").strip().lower() or "not_queued"
+        final_queue_count = _count_csv(final_queue)
 
-        if campaign_id in worker_active:
+        if final_queue_count <= 0:
+            reconciliation = "no_sendable_contacts"
+            deploy_status = "no_sendable_contacts"
+            send_status = "not_queued"
+            note = "final_send_queue.csv is empty; no sendable contacts survived filtering"
+        elif campaign_id in worker_active:
             reconciliation = "currently_waiting"
             note = "claimed by cloud worker, waiting for send window"
         elif campaign_id in worker_failed or send_status == "failed":
@@ -1267,17 +1304,17 @@ def load_cloud_deploy_reconciliation(limit: int = 20) -> list[dict]:
             "campaign_id": campaign_id,
             "location": str(cfg.get("base_city") or cfg.get("city") or queue_job.get("location") or "").strip(),
             "country": str(cfg.get("country") or queue_job.get("country") or "").strip(),
-            "final_send_queue": _count_csv(final_queue),
+            "final_send_queue": final_queue_count,
             "cloud_handoff": _cloud_handoff_label(
                 cfg.get("auto_cloud_deploy", queue_job.get("auto_cloud_deploy")),
                 send_mode,
             ),
-            "deploy_status": deploy_status,
+            "deploy_status": _deploy_status_display(deploy_status),
             "cloud_send_status": _cloud_send_status_label(
                 send_status,
                 claimed=(campaign_id in worker_active),
             ),
-            "reconciliation": reconciliation,
+            "reconciliation": _reconciliation_display(reconciliation),
             "note": note,
             "modified": _mtime(final_queue),
         })
@@ -1338,7 +1375,6 @@ def load_multi_run_comparison(limit: int = 8) -> list[dict]:
 
         send_summary = _read_json(run_dir / "send_batch_summary.json")
         send_total = int(send_summary.get("total") or 0)
-        generic_only = int(send_summary.get("policy_generic_only") or 0)
         review_required = int(send_summary.get("review_required") or 0)
         hard_blocked = int(send_summary.get("blocked") or 0)
         delivery_ready = int(send_summary.get("sent") or 0) + int(send_summary.get("dry_run") or 0)
@@ -1346,7 +1382,6 @@ def load_multi_run_comparison(limit: int = 8) -> list[dict]:
         dedup_rate = round(dedup_skipped / (raw_leads + dedup_skipped) * 100, 1) if (raw_leads + dedup_skipped) else 0.0
         qualification_rate = round(qualified / raw_leads * 100, 1) if raw_leads else 0.0
         final_queue_rate = round(final_queue / qualified * 100, 1) if qualified else 0.0
-        generic_only_rate = round(generic_only / send_total * 100, 1) if send_total else 0.0
         review_required_rate = round(review_required / send_total * 100, 1) if send_total else 0.0
         delivery_ready_rate = round(delivery_ready / send_total * 100, 1) if send_total else 0.0
         repair_lift = max(final_queue - initial_queue, 0)
@@ -1372,7 +1407,6 @@ def load_multi_run_comparison(limit: int = 8) -> list[dict]:
             "hard_blocked":       hard_blocked,
             "repair_lift":        repair_lift,
             "final_rejected":     final_rejected,
-            "generic_only_pct":   generic_only_rate,
         })
 
     return rows

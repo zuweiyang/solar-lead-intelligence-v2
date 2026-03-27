@@ -7,21 +7,6 @@
 
 ---
 
-## 2026-03-27 NOTE - FIRST-PRIORITY STABILIZATION PASS
-
-- Three first-priority stabilization fixes were applied together:
-  - runner env drift snapshots no longer persist raw secrets to `data/scheduler_env_state.json`
-  - `scrape` now fails at the `scrape` step when Google Places produces no usable `raw_leads.csv`, instead of surfacing later as a misleading `crawl` missing-file error
-  - first-touch email routing no longer falls back to generic-only mailboxes; only named Apollo / Hunter / website contacts are allowed into `final_send_queue.csv`
-- The env drift mechanism still works:
-  - operator-visible drift detection compares per-key hashes
-  - the persisted snapshot now stores masked values plus hashes instead of plaintext credentials
-- Operational consequence:
-  - if a run finishes enrichment/scoring with only generic addresses and no named contacts, the run is expected to end with `no_sendable_contacts`
-  - this is now considered truthful behavior, not a bug
-
----
-
 ## PROJECT OVERVIEW
 
 **Project Name:** solar-lead-intelligence
@@ -39,6 +24,66 @@ The system automatically:
 7. schedules follow-ups
 
 The goal is to build a fully automated outbound sales pipeline.
+
+---
+
+## 2026-03-27 NOTE - FIRST-PRIORITY STABILIZATION PASS
+
+- Three first-priority stabilization fixes were applied together:
+  - runner env drift snapshots no longer persist raw secrets to `data/scheduler_env_state.json`
+  - `scrape` now fails at the `scrape` step when Google Places produces no usable `raw_leads.csv`, instead of surfacing later as a misleading `crawl` missing-file error
+  - first-touch email routing no longer falls back to generic-only mailboxes; only named Apollo / Hunter / website contacts are allowed into `final_send_queue.csv`
+- The env drift mechanism still works:
+  - operator-visible drift detection compares per-key hashes
+  - the persisted snapshot now stores masked values plus hashes instead of plaintext credentials
+- Operational consequence:
+  - if a run finishes enrichment/scoring with only generic addresses and no named contacts, the run is expected to end with `no_sendable_contacts`
+  - this is now considered truthful behavior, not a bug
+- Current-effective-rules note:
+  - older sections below may still describe historical stages where `guessed` or `generic_only` existed as live routing paths
+  - the current effective behavior is:
+    - first-touch routing uses only named Apollo / Hunter / website contacts
+    - `generic_only` is not a live send path
+    - empty final queues should surface as `no_sendable_contacts`, not cloud-send failure
+
+---
+
+## 2026-03-27 NOTE - STREAMLIT HEARTBEAT FALSE POSITIVE
+
+- The original local queue heartbeat design depended on Streamlit page rerenders to refresh `data/control_panel_heartbeat.json`.
+- This caused false automatic pauses when the browser tab stopped rerendering for ~50s even though the Streamlit process was still alive.
+- Fix:
+  - `src/workflow_9_queue_scheduler/control_panel_heartbeat.py` now starts a singleton background heartbeat thread tied to the Streamlit process lifetime.
+  - `src/workflow_9_5_streamlit_control_panel/app.py` starts that thread on boot.
+- Result:
+  - local queue pause is now tied to the Streamlit **process** being closed, not transient UI refresh gaps.
+  - if the user closes/kills Streamlit, the heartbeat stops and the queue pauses as intended.
+
+---
+
+## 2026-03-27 NOTE - SECOND / THIRD PRIORITY HARDENING PASS
+
+- A second hardening pass tightened operator visibility, encoding safety, and market-aware mailbox handling:
+  - Workflow 5.5 enrichment now appends provider-level campaign logs for `Apollo`, `Hunter`, and `website` attempts so long enrich runs no longer look like a black box.
+  - Core local persistence entry points now normalize text before writing queue state, campaign state, raw leads, and company page crawl payloads. This is intended to reduce recurring mojibake / encoding drift in market names such as Brazil city labels with accents.
+  - Control-panel heartbeat validation was run against isolated heartbeat files:
+    - live process heartbeats stay fresh while the process remains alive
+    - heartbeat state becomes stale after process exit and timeout expiry
+    - `CONTROL_PANEL_HEARTBEAT_FILE` can now be overridden via environment variable for isolated validation without disturbing the live UI heartbeat
+  - Cloud deploy history / reconciliation now uses a clearer operator-facing label for empty send queues:
+    - `no_sendable_contacts` is displayed as "no sendable contacts (not queued by design)"
+  - Generic mailbox detection is now market-aware instead of carrying a hard-coded Brazil bias inside Workflow 6 / 5.9:
+    - Workflow 6 email merge consults the row country when judging generic localparts
+    - Workflow 5.9 verification consults the row country when assigning generic mailbox tiers
+    - when country is missing, `.br` domains still infer the Brazil mailbox profile as a safe fallback
+- Validation completed with the existing test suite only:
+  - `test_send_policy_enforcement.py`
+  - `test_policy_visibility.py`
+  - `test_brazil_market_localization.py`
+  - `test_enrichment_resilience.py`
+  - `test_content_extractor_emails.py`
+  - `test_run_scoped_paths.py`
+  - `test_run_paths_architecture.py`
 
 ---
 
@@ -4123,6 +4168,32 @@ Website-contact loss between Workflow 3 crawl output and Workflow 5.5 enrichment
 - status:
   - fixed locally and verified
   - push / VM update still pending for this specific website-contact handoff fix
+
+2026-03-27 20:35
+
+`generic_only` is no longer an active operational send path.
+
+- operator / product decision:
+  - first-touch sending should only proceed with:
+    - `Apollo`
+    - `Hunter`
+    - `website`
+  - generic mailbox fallback should not silently keep volume alive
+- current effective behavior:
+  - Workflow 6 queue policy now maps:
+    - verified `generic_pool_only` -> `block`
+    - unverified generic mailbox -> `block`
+  - Workflow 6 email generation only treats `allow` / `allow_limited` as sendable
+  - Workflow 7 send pipeline hard-blocks:
+    - legacy `generic_only` policy rows
+    - any `send_target_type = generic` record that still reaches send-time
+  - Workflow 8 follow-up selection no longer falls back from named contact to generic mailbox
+  - Workflow 8.5 / control-panel reporting no longer treats `generic_only` as a live send-stage path or comparison metric
+- backward-compatibility note:
+  - queue-policy artifacts may still contain a `generic_only` count/key for older runs or schema continuity
+  - operationally, that path should now remain zero for new runs
+- intent:
+  - remove the last ambiguous path where generic mailboxes could still appear to be part of normal outbound execution
 
 2026-03-26 23:20
 
