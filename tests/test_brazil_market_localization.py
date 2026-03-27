@@ -24,9 +24,9 @@ def test_brazil_uses_portuguese_default_keywords() -> None:
     assert get_effective_keywords(cfg) == list(BRAZIL_SEARCH_KEYWORDS)
     assert "integrador solar" in get_search_keywords("Brazil")
     assert "distribuidor fotovoltaico" in get_search_keywords("Brazil")
-    assert "instalador solar" in get_search_keywords("Brazil")
-    assert "empresa de energia solar" in get_search_keywords("Brazil")
-    assert "epc solar" in get_search_keywords("Brazil")
+    assert "empresa EPC solar" in get_search_keywords("Brazil")
+    assert "empresa de energia solar comercial" in get_search_keywords("Brazil")
+    assert len(get_search_keywords("Brazil")) == 6
     assert "solar installer" not in get_search_keywords("Brazil")
 
 

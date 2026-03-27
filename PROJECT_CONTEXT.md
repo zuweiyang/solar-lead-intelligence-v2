@@ -45,6 +45,11 @@ The goal is to build a fully automated outbound sales pipeline.
     - first-touch routing uses only named Apollo / Hunter / website contacts
     - `generic_only` is not a live send path
     - empty final queues should surface as `no_sendable_contacts`, not cloud-send failure
+    - Places cost hardening is active for new runs:
+      - Brazil default search keywords are reduced to a 6-keyword, high-intent set
+      - Places Text Search is capped to the first page per keyword by default
+      - candidate places are deduplicated across keywords before any Place Details calls are made
+      - `company_limit` now constrains the upstream Places scrape budget instead of only acting later in the pipeline
 
 ---
 

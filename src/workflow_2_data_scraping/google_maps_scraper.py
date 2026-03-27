@@ -5,10 +5,17 @@ import csv
 import json
 import random
 import time
+
 import requests
+
 from config.settings import (
-    SEARCH_TASKS_FILE, RAW_LEADS_FILE,
-    SCRAPE_DELAY_SECONDS, GOOGLE_MAPS_API_KEY,
+    SEARCH_TASKS_FILE,
+    RAW_LEADS_FILE,
+    SCRAPE_DELAY_SECONDS,
+    GOOGLE_MAPS_API_KEY,
+    PLACES_TEXT_SEARCH_MAX_PAGES,
+    PLACES_MAX_UNIQUE_PLACES_PER_RUN,
+    PLACES_MAX_DETAILS_CALLS_PER_RUN,
 )
 from src.utils.text_normalization import normalize_text, normalize_value
 
@@ -18,40 +25,18 @@ LEAD_FIELDS = [
 ]
 
 PLACES_TEXT_SEARCH_URL = "https://maps.googleapis.com/maps/api/place/textsearch/json"
-PLACES_DETAILS_URL     = "https://maps.googleapis.com/maps/api/place/details/json"
+PLACES_DETAILS_URL = "https://maps.googleapis.com/maps/api/place/details/json"
 
-# Fields fetched in the Details call (billed per field group)
 DETAIL_FIELDS = "name,formatted_address,formatted_phone_number,website,rating,types"
 
-
-# ---------------------------------------------------------------------------
-# Google Places helpers
-# ---------------------------------------------------------------------------
-
-# Google's next_page_token activation is server-side and non-deterministic.
-# Official guidance: there is a delay of a few seconds before the token is
-# valid; requesting too early returns INVALID_REQUEST.
-#
-# Strategy: short fixed initial wait (happy-path fast), then exponential
-# backoff with jitter if INVALID_REQUEST is received, bounded by a hard
-# total budget.  Never treat INVALID_REQUEST on a pagetoken as immediately
-# fatal.
-_PAGETOKEN_INITIAL_DELAY  = 3.0   # seconds to wait before the first pagetoken attempt
-_PAGETOKEN_BACKOFF_BASE   = 2.0   # first retry wait (seconds)
-_PAGETOKEN_BACKOFF_FACTOR = 2.0   # multiply each successive retry wait
-_PAGETOKEN_BACKOFF_CAP    = 8.0   # maximum per-retry wait (seconds)
-_PAGETOKEN_TOTAL_BUDGET   = 18.0  # hard total budget from token receipt (seconds)
+_PAGETOKEN_INITIAL_DELAY = 3.0
+_PAGETOKEN_BACKOFF_BASE = 2.0
+_PAGETOKEN_BACKOFF_FACTOR = 2.0
+_PAGETOKEN_BACKOFF_CAP = 8.0
+_PAGETOKEN_TOTAL_BUDGET = 18.0
 
 
-def _text_search(query: str) -> list[dict]:
-    """
-    Call Places Text Search and return raw place results (all pages).
-    Each result contains: place_id, name, formatted_address, rating, types.
-
-    Pagination note: Google's next_page_token is not immediately valid after
-    the previous response. A short initial delay is applied, then INVALID_REQUEST
-    responses trigger exponential backoff retries bounded by _PAGETOKEN_TOTAL_BUDGET.
-    """
+def _text_search(query: str, max_pages: int = 1) -> list[dict]:
     initial_params = {"query": query, "key": GOOGLE_MAPS_API_KEY}
     params = dict(initial_params)
     places: list[dict] = []
@@ -63,62 +48,53 @@ def _text_search(query: str) -> list[dict]:
         data = resp.json()
         status = data.get("status", "")
 
-        # ---- handle INVALID_REQUEST on pagination (token not yet active) ----
-        # INVALID_REQUEST here means the token exists but is not yet activated
-        # server-side.  Retry with exponential backoff + jitter until the hard
-        # total budget (_PAGETOKEN_TOTAL_BUDGET) is exhausted.
         if status == "INVALID_REQUEST" and "pagetoken" in params:
-            elapsed     = _PAGETOKEN_INITIAL_DELAY   # already consumed above
-            next_wait   = _PAGETOKEN_BACKOFF_BASE
-            attempt     = 0
+            elapsed = _PAGETOKEN_INITIAL_DELAY
+            next_wait = _PAGETOKEN_BACKOFF_BASE
+            attempt = 0
             token_ready = False
 
             while True:
-                # Budget check: stop before sleeping if next wait exceeds budget
                 if elapsed + next_wait > _PAGETOKEN_TOTAL_BUDGET:
                     print(
-                        f"[Workflow 2]   WARN: pagetoken budget exhausted — "
-                        f"query='{query}' page={page_num + 1} "
-                        f"retries={attempt} elapsed={elapsed:.1f}s "
-                        f"budget={_PAGETOKEN_TOTAL_BUDGET:.0f}s — "
+                        f"[Workflow 2]   WARN: pagetoken budget exhausted - "
+                        f"query='{query}' page={page_num + 1} retries={attempt} "
+                        f"elapsed={elapsed:.1f}s budget={_PAGETOKEN_TOTAL_BUDGET:.0f}s - "
                         f"pagination stopped at {len(places)} results"
                     )
                     break
 
-                jitter      = random.uniform(0, next_wait * 0.25)
+                jitter = random.uniform(0, next_wait * 0.25)
                 actual_wait = next_wait + jitter
-                attempt    += 1
+                attempt += 1
                 print(
-                    f"[Workflow 2]   WARN: pagetoken not yet active — "
-                    f"query='{query}' page={page_num + 1} "
-                    f"retry={attempt} wait={actual_wait:.1f}s "
-                    f"elapsed={elapsed:.1f}s budget={_PAGETOKEN_TOTAL_BUDGET:.0f}s"
+                    f"[Workflow 2]   WARN: pagetoken not yet active - "
+                    f"query='{query}' page={page_num + 1} retry={attempt} "
+                    f"wait={actual_wait:.1f}s elapsed={elapsed:.1f}s "
+                    f"budget={_PAGETOKEN_TOTAL_BUDGET:.0f}s"
                 )
                 time.sleep(actual_wait)
                 elapsed += actual_wait
 
                 resp = requests.get(PLACES_TEXT_SEARCH_URL, params=params, timeout=10)
                 resp.raise_for_status()
-                data   = resp.json()
+                data = resp.json()
                 status = data.get("status", "")
 
                 if status != "INVALID_REQUEST":
                     token_ready = True
                     print(
-                        f"[Workflow 2]   OK: pagetoken active — "
-                        f"query='{query}' page={page_num + 1} "
-                        f"retry={attempt} elapsed={elapsed:.1f}s"
+                        f"[Workflow 2]   OK: pagetoken active - "
+                        f"query='{query}' page={page_num + 1} retry={attempt} "
+                        f"elapsed={elapsed:.1f}s"
                     )
                     break
 
-                # Exponential growth, capped per step
-                next_wait = min(next_wait * _PAGETOKEN_BACKOFF_FACTOR,
-                                _PAGETOKEN_BACKOFF_CAP)
+                next_wait = min(next_wait * _PAGETOKEN_BACKOFF_FACTOR, _PAGETOKEN_BACKOFF_CAP)
 
             if not token_ready:
                 break
 
-        # ---- handle other non-OK / ZERO_RESULTS statuses -------------------
         if status not in ("OK", "ZERO_RESULTS"):
             err_msg = data.get("error_message", "")
             context = "page 1 (initial request)" if page_num == 0 else f"page {page_num + 1} (pagetoken)"
@@ -126,11 +102,10 @@ def _text_search(query: str) -> list[dict]:
             if status == "REQUEST_DENIED":
                 hint = " (check API key, billing, and Places API enable status)"
             elif status == "OVER_QUERY_LIMIT":
-                hint = " (daily quota exceeded — try again tomorrow or upgrade billing)"
+                hint = " (daily quota exceeded - try again tomorrow or upgrade billing)"
             print(
-                f"[Workflow 2]   ERROR: Places API returned {status} "
-                f"for '{query}' at {context}"
-                + (f" — {err_msg}" if err_msg else "")
+                f"[Workflow 2]   ERROR: Places API returned {status} for '{query}' at {context}"
+                + (f" - {err_msg}" if err_msg else "")
                 + hint
             )
             break
@@ -140,14 +115,16 @@ def _text_search(query: str) -> list[dict]:
         page_num += 1
         print(
             f"[Workflow 2]   Page {page_num}: +{len(new_results)} results "
-            f"(running total: {len(places)}) — '{query}'"
+            f"(running total: {len(places)}) - '{query}'"
         )
+
+        if max_pages > 0 and page_num >= max_pages:
+            break
 
         next_token = data.get("next_page_token")
         if not next_token:
             break
 
-        # Google requires a short delay before the next-page token becomes valid
         time.sleep(_PAGETOKEN_INITIAL_DELAY)
         params = {"pagetoken": next_token, "key": GOOGLE_MAPS_API_KEY}
 
@@ -155,102 +132,145 @@ def _text_search(query: str) -> list[dict]:
 
 
 def _place_details(place_id: str) -> dict:
-    """
-    Fetch detailed info for a single place (website, phone, etc.).
-    Returns the 'result' dict from the API response.
-    """
     params = {
         "place_id": place_id,
-        "fields":   DETAIL_FIELDS,
-        "key":      GOOGLE_MAPS_API_KEY,
+        "fields": DETAIL_FIELDS,
+        "key": GOOGLE_MAPS_API_KEY,
     }
     resp = requests.get(PLACES_DETAILS_URL, params=params, timeout=10)
     resp.raise_for_status()
     data = resp.json()
-
     if data.get("status") != "OK":
         return {}
     return data.get("result", {})
 
 
 def _primary_category(types: list[str]) -> str:
-    """Return the most human-readable type from a place's types list."""
     skip = {"point_of_interest", "establishment", "premise"}
-    for t in types:
-        if t not in skip:
-            return t.replace("_", " ")
+    for item in types:
+        if item not in skip:
+            return item.replace("_", " ")
     return types[0].replace("_", " ") if types else ""
 
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
+def _dedup_key(place: dict) -> str:
+    place_id = normalize_text(place.get("place_id", ""))
+    if place_id:
+        return f"place_id:{place_id}"
+    name = normalize_text(place.get("name", "")).lower()
+    address = normalize_text(place.get("formatted_address", "")).lower()
+    return f"fallback:{name}|{address}"
 
-def scrape_google_maps(query: str, location: str) -> list[dict]:
-    """
-    Search Google Maps for companies matching query+location and return
-    a list of lead dicts with: company_name, address, website, phone, rating, category.
-    """
-    raw_places = _text_search(query)
-    leads: list[dict] = []
 
-    for place in raw_places:
-        place_id = place.get("place_id", "")
-        website  = place.get("website", "")
-        phone    = place.get("formatted_phone_number", "")
+def _effective_unique_place_budget(limit: int) -> int:
+    if limit > 0:
+        derived = max(limit * 3, limit)
+        if PLACES_MAX_UNIQUE_PLACES_PER_RUN > 0:
+            return min(PLACES_MAX_UNIQUE_PLACES_PER_RUN, derived)
+        return derived
+    return PLACES_MAX_UNIQUE_PLACES_PER_RUN
 
-        # Only call Place Details when website or phone is missing — saves ~70% API cost
-        details: dict = {}
-        if place_id and (not website or not phone):
-            details = _place_details(place_id)
-            time.sleep(0.1)  # stay within per-second rate limit
 
-        leads.append({
-            "company_name": normalize_text(place.get("name", "")),
-            "address":      normalize_text(place.get("formatted_address", "")),
-            "website":      normalize_text(details.get("website", "") or website),
-            "phone":        normalize_text(details.get("formatted_phone_number", "") or phone),
-            "rating":       str(place.get("rating", "")),
-            "category":     normalize_text(_primary_category(place.get("types", []))),
-            "place_id":     normalize_text(place_id),
-        })
+def _effective_details_budget(limit: int) -> int:
+    if limit > 0:
+        derived = max(limit * 2, limit)
+        if PLACES_MAX_DETAILS_CALLS_PER_RUN > 0:
+            return min(PLACES_MAX_DETAILS_CALLS_PER_RUN, derived)
+        return derived
+    return PLACES_MAX_DETAILS_CALLS_PER_RUN
 
-    return leads
+
+def scrape_google_maps(query: str, location: str, max_pages: int = 1) -> list[dict]:
+    return _text_search(query, max_pages=max_pages)
 
 
 def load_pending_tasks() -> list[dict]:
-    """Load tasks with status 'pending' from search_tasks.json."""
     with open(SEARCH_TASKS_FILE, encoding="utf-8") as f:
         tasks = json.load(f)
-    return [t for t in tasks if t.get("status") == "pending"]
+    return [task for task in tasks if task.get("status") == "pending"]
 
 
-def scrape_all_tasks() -> list[dict]:
-    """Run the scraper for every pending search task and collect leads."""
-    tasks     = load_pending_tasks()
-    all_leads: list[dict] = []
+def scrape_all_tasks(limit: int = 0) -> list[dict]:
+    tasks = load_pending_tasks()
+    unique_budget = _effective_unique_place_budget(limit)
+    details_budget = _effective_details_budget(limit)
+    candidate_places: dict[str, dict] = {}
+    details_calls = 0
 
     for task in tasks:
         query = normalize_text(task["query"])
         print(f"[Workflow 2] Scraping: {query}")
         try:
             location = normalize_text(task["location"])
-            leads = scrape_google_maps(query, location)
-            for lead in leads:
-                lead["source_keyword"]  = normalize_text(task["keyword"])
-                lead["source_location"] = location
-            all_leads.extend(leads)
-            source = "Places API (primary)"
-            print(f"[Workflow 2]   → {len(leads)} results [{source}]")
+            raw_places = scrape_google_maps(
+                query,
+                location,
+                max_pages=max(1, PLACES_TEXT_SEARCH_MAX_PAGES),
+            )
+            added = 0
+            for place in raw_places:
+                key = _dedup_key(place)
+                if key in candidate_places:
+                    continue
+                if unique_budget > 0 and len(candidate_places) >= unique_budget:
+                    break
+                candidate_places[key] = {
+                    **place,
+                    "source_keyword": normalize_text(task["keyword"]),
+                    "source_location": location,
+                }
+                added += 1
+
+            print(
+                f"[Workflow 2]   -> {len(raw_places)} raw / +{added} unique "
+                f"(unique total: {len(candidate_places)}) [Places API]"
+            )
         except Exception as exc:
             print(f"[Workflow 2]   ERROR on '{query}': {exc}")
+
+        if unique_budget > 0 and len(candidate_places) >= unique_budget:
+            print(
+                f"[Workflow 2] Unique-place budget reached "
+                f"({len(candidate_places)}/{unique_budget}) -> stopping Places search for this run"
+            )
+            break
+
         time.sleep(SCRAPE_DELAY_SECONDS)
 
-    return all_leads
+    leads: list[dict] = []
+    for place in candidate_places.values():
+        place_id = place.get("place_id", "")
+        website = place.get("website", "")
+        phone = place.get("formatted_phone_number", "")
+
+        details: dict = {}
+        if place_id and (not website or not phone):
+            if details_budget <= 0 or details_calls < details_budget:
+                details = _place_details(place_id)
+                details_calls += 1
+                time.sleep(0.1)
+            else:
+                print(
+                    f"[Workflow 2] Details-call budget reached "
+                    f"({details_calls}/{details_budget}) -> skipping extra Place Details"
+                )
+
+        leads.append({
+            "company_name": normalize_text(place.get("name", "")),
+            "address": normalize_text(place.get("formatted_address", "")),
+            "website": normalize_text(details.get("website", "") or website),
+            "phone": normalize_text(details.get("formatted_phone_number", "") or phone),
+            "rating": str(place.get("rating", "")),
+            "category": normalize_text(_primary_category(place.get("types", []))),
+            "place_id": normalize_text(place_id),
+            "source_keyword": normalize_text(place.get("source_keyword", "")),
+            "source_location": normalize_text(place.get("source_location", "")),
+        })
+
+    return leads
 
 
 def save_raw_leads(leads: list[dict]) -> None:
-    """Write scraped leads to raw_leads.csv."""
     if not leads:
         print("[Workflow 2] No leads to save.")
         return
@@ -258,16 +278,16 @@ def save_raw_leads(leads: list[dict]) -> None:
         writer = csv.DictWriter(f, fieldnames=LEAD_FIELDS, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(normalize_value(leads))
-    print(f"[Workflow 2] Saved {len(leads)} raw leads → {RAW_LEADS_FILE}")
+    print(f"[Workflow 2] Saved {len(leads)} raw leads -> {RAW_LEADS_FILE}")
 
 
-def run() -> list[dict]:
+def run(limit: int = 0) -> list[dict]:
     if not GOOGLE_MAPS_API_KEY:
         raise RuntimeError(
             "[Workflow 2] GOOGLE_MAPS_API_KEY is not set. "
             "Add it to your .env file before running the scrape step."
         )
-    leads = scrape_all_tasks()
+    leads = scrape_all_tasks(limit=limit)
     save_raw_leads(leads)
     return leads
 

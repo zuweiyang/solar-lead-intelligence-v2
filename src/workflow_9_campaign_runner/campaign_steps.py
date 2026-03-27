@@ -268,7 +268,7 @@ def run_step_1_search_tasks(config: CampaignConfig) -> list[dict]:
 def run_step_2_scrape(config: CampaignConfig) -> list[dict]:
     _require_file(SEARCH_TASKS_FILE, "scrape")
     from src.workflow_2_data_scraping.google_maps_scraper import run
-    result = run()
+    result = run(limit=config.company_limit)
     if not result or not _csv_has_rows(RAW_LEADS_FILE):
         raise RuntimeError(
             "[scrape] Google Places produced no usable raw leads. "

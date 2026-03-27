@@ -59,6 +59,9 @@ DAILY_EMAIL_LIMIT = int(os.getenv("DAILY_EMAIL_LIMIT", "100"))
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", "100"))
 SCRAPE_DELAY_SECONDS = float(os.getenv("SCRAPE_DELAY_SECONDS", "1.0"))
 CRAWL_DELAY_SECONDS = float(os.getenv("CRAWL_DELAY_SECONDS", "1.0"))
+PLACES_TEXT_SEARCH_MAX_PAGES = int(os.getenv("PLACES_TEXT_SEARCH_MAX_PAGES", "1"))
+PLACES_MAX_UNIQUE_PLACES_PER_RUN = int(os.getenv("PLACES_MAX_UNIQUE_PLACES_PER_RUN", "60"))
+PLACES_MAX_DETAILS_CALLS_PER_RUN = int(os.getenv("PLACES_MAX_DETAILS_CALLS_PER_RUN", "25"))
 
 # --- Cloud Send Deployment Settings ---
 CLOUD_SEND_ENABLED = os.getenv("CLOUD_SEND_ENABLED", "false").lower() == "true"

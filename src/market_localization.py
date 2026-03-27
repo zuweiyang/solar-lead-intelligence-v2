@@ -120,33 +120,13 @@ DEFAULT_MARKET_PROFILE = MarketProfile(
 )
 
 
-BRAZIL_INSTALLER_SEARCH_KEYWORDS: tuple[str, ...] = (
+BRAZIL_SEARCH_KEYWORDS: tuple[str, ...] = (
     "integrador solar",
-    "empresa integradora solar",
-    "instalador solar",
-    "instalador fotovoltaico",
-    "empresa de energia solar",
-    "empresa de energia solar residencial",
-    "empresa de energia solar comercial",
-    "energia solar",
-    "energia fotovoltaica",
-    "epc solar",
     "empresa EPC solar",
-)
-
-BRAZIL_PROCUREMENT_SEARCH_KEYWORDS: tuple[str, ...] = (
+    "empresa de energia solar comercial",
     "distribuidor fotovoltaico",
-    "distribuidor de energia solar",
-    "kit fotovoltaico",
     "estrutura fotovoltaica",
     "fabricante de estrutura fotovoltaica",
-    "suporte para painel solar",
-    "mini rail solar",
-)
-
-BRAZIL_SEARCH_KEYWORDS: tuple[str, ...] = _merge_unique(
-    BRAZIL_INSTALLER_SEARCH_KEYWORDS,
-    BRAZIL_PROCUREMENT_SEARCH_KEYWORDS,
 )
 
 BRAZIL_CRAWL_HOME_HINTS: tuple[str, ...] = (
